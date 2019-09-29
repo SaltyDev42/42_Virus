@@ -1,0 +1,27 @@
+3 important headers
+elf header
+section header (linking)
+segment header (runtime)
+
+elf header contains:
+    	endianess (could be ignored here since we working only on x86 variant)
+	instruction set (between x86 and x86_64)
+	architecture (can also be ignored, see above)
+	--
+	an index into section header which points to ".shstrtab"
+	an offset to segment header (phoff)
+	an offset to section header (shoff)
+
+section header contains:
+	dynamic linking information (Shdr->sh_type == SHT_DYNAMIC) (6)*
+	dynamic linker symbol table (Shdr->sh_type == SHT_DYNSYM)  (11)*
+	symbol table                (Shdr->sh_type == SHT_SYMTAB)  (2)*
+	symbol string table         (Shdr->sh_type == SHT_STRTAB)  (3)*
+
+segment header contains:
+	dynamic linking information (Phdr->p_type == PT_DYNAMIC)  (2)*
+
+* Values which are defined by Linux 5.3.0
+
+function syscall is also available on OSx, but marked as deprecated since Sierra because reason
+mprotect is also available
