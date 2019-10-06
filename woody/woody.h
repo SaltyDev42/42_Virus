@@ -2,6 +2,7 @@
 # define __WOODY_H__ 1
 
 # include <elf.h>
+# include <sys/stat.h>
 
 # define WVICTIM(x) x##_victim
 # define ELF32_E(x) ((Elf32_Ehdr *)(x))
@@ -11,7 +12,6 @@
 # define SELF32_E sizeof(Elf32_Ehdr)
 # define SELF32_S sizeof(Elf32_Shdr)
 # define SELF32_P sizeof(Elf32_Phdr)
-
 
 # define ELF64_E(x) ((Elf64_Ehdr *)(x))
 # define ELF64_S(x) ((Elf64_Shdr *)(x))
@@ -23,21 +23,27 @@
 
 typedef struct
 {
+	char *name;
+
 	int fd;
 	int WVICTIM(fd);
 	void *map;
 	void *WVICTIM(map);
-	void *bottom;
-	void *WVICTIM(bottom);
 
+	struct stat stat;
 	unsigned char *ident;
 	void *ehdr;
 	void *phdr;
 	void *shdr;
+} WOODYFILE;
 
+typedef struct
+{
+	void *map;
+	void *text;
+
+	int fd;
 	int ntext;
-	int ndata;
-	int nrodata;
-} WOODFILE;
+} WOODYPAYLOAD;
 
 #endif

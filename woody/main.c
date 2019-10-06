@@ -22,6 +22,8 @@
 #define WOOD_MAPPROT (PROT_READ | PROT_WRITE)
 #define WWMAP(fd, size) WMAP(fd, size, WOOD_MAPPROT, WOOD_MAPFLAG)
 
+
+/* checking elf headers integrity */
 #define	WELF_CHECK(ELF_HDR, ptr, sphdr, sshdr, filesize, jump, shdr, phdr) \
 	if (ELF_HDR(ptr)->e_machine != EM_386 &&			\
 	    ELF_HDR(ptr)->e_machine != EM_X86_64) {			\
@@ -29,19 +31,22 @@
 		goto jump;						\
 	}								\
 	if (ELF_HDR(ptr)->e_phoff >= (filesize)	||			\
-	    ELF_HDR(ptr)->e_phoff + ELF_HDR(ptr)->e_phentsize >= (filesize) || \
-	    ELF_HDR(ptr)->e_phentsize != (sphdr) * ELF_HDR(ptr)->e_phnum || \
+	    ELF_HDR(ptr)->e_phoff + ELF_HDR(ptr)->e_phentsize		\
+	    * ELF_HDR(ptr)->e_phnum > (filesize) ||			\
+	    ELF_HDR(ptr)->e_phentsize != (sphdr) ||			\
+	    /* section headers */					\
 	    ELF_HDR(ptr)->e_shoff >= (filesize) ||			\
-	    ELF_HDR(ptr)->e_shoff + ELF_HDR(ptr)->e_shentsize >= (filesize) || \
-	    ELF_HDR(ptr)->e_shentsize != (sshdr) * ELF_HDR(ptr)->e_shnum) { \
+	    ELF_HDR(ptr)->e_shoff + ELF_HDR(ptr)->e_shentsize		\
+	    * ELF_HDR(ptr)->e_shnum > (filesize) ||			\
+	    ELF_HDR(ptr)->e_shentsize != (sshdr) ||			\
+	    ELF_HDR(ptr)->e_shstrndx >= ELF_HDR(ptr)->e_shnum) {	\
 		dprintf(STDERR_FILENO, "Elf is corrupted\n");		\
 		goto jump;						\
 	}								\
 	(phdr) = ELF_HDR(ptr)->e_phoff + (char *)ptr;			\
 	(shdr) = ELF_HDR(ptr)->e_shoff + (char *)ptr;
 
-#define NEXT_HDR(hdr, s)           (hdr) = (((char *)(hdr)) + s)
-
+/* checking section headers integrity */
 #define WELF_SCHECK(ELF_HDR, ptr, filesize, jump)			\
 	if ((ELF_HDR(ptr)->sh_name & SHN_LORESERVE) == SHN_LORESERVE)	\
 		continue;						\
@@ -51,22 +56,24 @@
 		goto jump;						\
 	}
 
+/* checking program headers integrity*/
 #define WELF_PCHECK(ELF_HDR, ptr, filesize, jump)			\
 	if (ELF_HDR(ptr)->p_offset >= (filesize) ||			\
 	    ELF_HDR(ptr)->p_offset + ELF_HDR(ptr)->p_filesz >= (filesize)) { \
 		dprintf(STDERR_FILENO, "Elf is corrupted\n");		\
 		goto jump;						\
 	}
-		
 
-#define HASH_DTEXT
-#define HASH_DDATA
+
+#define NEXT_HDR(hdr, s)           (hdr) = (((char *)(hdr)) + s)
+		
 
 /*#define HASH_DRODATA*/
 
 typedef uint32_t hashval_t;
 
-static hashval_t hash_string(char *str)
+static hashval_t
+hash_string(char *str)
 {
 	uint32_t	hash;
 
@@ -79,10 +86,11 @@ static hashval_t hash_string(char *str)
 	return (hash);
 }
 
-WOODFILE *wood_open(char *victim)
+WOODYFILE
+*woody_open(char *victim)
 {
 	struct stat   _stat;
-	WOODFILE      *new;
+	WOODYFILE     *new;
 	void          *mapv, *mapw;
 	void          *shstr, *phdr, *shdr;
 	void	      *nshdr, *nphdr;
@@ -185,11 +193,15 @@ WOODFILE *wood_open(char *victim)
 		}
 	}
 
+	new->name = victim;
 	new->fd = fdv;
 	new->map = mapv;
-	new->bottom = (char *)mapv + _stat.st_size;
-	new->ehdr = mapv;
 	new->ident = ident;
+
+	new->ehdr = mapv;
+	new->phdr = phdr;
+	new->shdr = shdr;
+	memcpy(&new->stat, &_stat, sizeof _stat);
 
 	return new;
 
@@ -203,8 +215,26 @@ fail_alloc:
 	return 0;
 }
 
+
+/*
+ * Behavior is undefined if any of data are corrupt
+ */
+int
+woody_prepare(WOODYFILE *w)
+{
+	
+}
+
 int
 main(int ac, char **av)
 {
+	WOODYFILE *w;
+
+	w = wood_open(av[1]);
+	wood_prepare(w);
+	if (0 == w)
+		goto fail;
 	return 0;
+fail:
+	return 1;
 }
