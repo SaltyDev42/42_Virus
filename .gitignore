@@ -1,5 +1,7 @@
+*.o
 *~
 *#*
-a
-a.out
+*_elf*
+*a.out*
 test
+a
