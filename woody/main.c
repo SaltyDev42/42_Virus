@@ -22,7 +22,6 @@
 #define WOOD_MAPPROT (PROT_READ | PROT_WRITE)
 #define WWMAP(fd, size) WMAP(fd, size, WOOD_MAPPROT, WOOD_MAPFLAG)
 
-
 /* checking elf headers integrity */
 #define	WELF_CHECK(ELF_HDR, ptr, sphdr, sshdr, filesize, jump, shdr, phdr) \
 	if (ELF_HDR(ptr)->e_machine != EM_386 &&			\
@@ -65,17 +64,21 @@
 	}
 
 
-#define NEXT_HDR(hdr, s)           (hdr) = (((char *)(hdr)) + s)
-		
+#define NEXT_HDR(hdr, s)           (hdr) = (((char *)(hdr)) + (s))
 
-/*#define HASH_DRODATA*/
+#define DEFAULT_PAYLOAD_PATH           "./BUILD/payload.o"
 
+#define DEFAULT_PAYLOAD_PACK_SYMNAME   "pack"
+#define DEFAULT_PAYLOAD_UNPACK_SYMNAME "unpack"
+
+/* probably unsafe if symbol has no trailing '\0' to mark the end */
+#if 0
 typedef uint32_t hashval_t;
 
 static hashval_t
-hash_string(char *str)
+hash_string(const char *str)
 {
-	uint32_t	hash;
+	uint32_t hash;
 
 	hash = 85206151;
 	while (*str)
@@ -85,27 +88,19 @@ hash_string(char *str)
 	}
 	return (hash);
 }
+#endif
 
-WOODYFILE
-*woody_open(char *victim)
+int
+woody_open(const char *victim, WOODYFILE *buf)
 {
-	struct stat   _stat;
-	WOODYFILE     *new;
-	void          *mapv, *mapw;
+	struct stat   *_stat;
+	WOODYFILE     *new = buf;
+	void          *mapv;
 	void          *shstr, *phdr, *shdr;
 	void	      *nshdr, *nphdr;
 	void          *shdx;
 	unsigned char *ident;
-	int           fdv, fdw;
-	int           ntext = -1,
-		      ndata = -1,
-		      nrodata = -1;
-
-	new = malloc(sizeof *new);
-	if (0 == new) {
-		dprintf(STDERR_FILENO, "fatal: malloc fail\n");
-		goto fail_alloc;
-	}
+	int           fdv;
 
 	fdv = open(victim, O_RDONLY);
 	if (0 > fdv) {
@@ -113,13 +108,18 @@ WOODYFILE
 		goto fail_open;
 	}
 
-	fstat(fdv, &_stat);
-	if ((__off_t)sizeof(Elf32_Ehdr) > _stat.st_size) {
+	if (0 > fstat(fdv, &new->stat)) {
+		dprintf(STDERR_FILENO, "fatal: could not stat %s\n", victim);
+		goto fail_vmap;
+	}
+
+	_stat = &new->stat;
+	if ((__off_t)sizeof(Elf32_Ehdr) > _stat->st_size) {
 		dprintf(STDERR_FILENO, "unsupported file\n");
 		goto fail_vmap;
 	}
 
-	mapv = WVMAP(fdv, _stat.st_size);
+	mapv = WVMAP(fdv, _stat->st_size);
 	if (MAP_FAILED == mapv) {
 		dprintf(STDERR_FILENO, "fatal: mmap fail\n");
 		goto fail_vmap;
@@ -145,36 +145,37 @@ WOODYFILE
 	}
 
 	/* checking if any segment is past size of file */
-	if (ident[EI_CLASS] == ELFCLASS32) {
+	switch (ident[EI_CLASS]) {
+	case ELFCLASS32:
 		WELF_CHECK(ELF32_E, mapv,
-			   sizeof(Elf32_Phdr),               /*sphdr*/
-			   sizeof(Elf32_Shdr),               /*sshdr*/
-			   (long unsigned int)_stat.st_size, /*filesize*/
-			   fail_corrupt,                     /*jump*/
+			   sizeof(Elf32_Phdr),                /*sphdr*/
+			   sizeof(Elf32_Shdr),                /*sshdr*/
+			   (long unsigned int)_stat->st_size, /*filesize*/
+			   fail_corrupt,                      /*jump*/
 			   shdr, phdr);
 		shstr = &ELF32_S(shdr)[ELF32_E(mapv)->e_shstrndx];
 		shdx = ELF32_S(shstr)->sh_offset + (char *)mapv;
 		nshdr = shdr;
-
+		
 		for (int i = ELF32_E(mapv)->e_shnum; i;
 		     i--, NEXT_HDR(nshdr, SELF32_S)) {
-			WELF_SCHECK(ELF32_S, nshdr, (long unsigned int)_stat.st_size, fail_corrupt);
+			WELF_SCHECK(ELF32_S, nshdr, (long unsigned int)_stat->st_size, fail_corrupt);
 		}
-
+		
 		nphdr = phdr;
 		for (int i = ELF32_E(mapv)->e_phnum; i;
 		     i--, NEXT_HDR(nphdr, SELF32_P)) {
-			WELF_PCHECK(ELF32_P, nphdr, (long unsigned int)_stat.st_size, fail_corrupt);
+			WELF_PCHECK(ELF32_P, nphdr, (long unsigned int)_stat->st_size, fail_corrupt);
 		}
-	}
+		break ;
 
 	/* same as above for 64 bits */
-	if (ident[EI_CLASS] == ELFCLASS64) {
+	case ELFCLASS64: 
 		WELF_CHECK(ELF64_E, mapv,
-			   sizeof(Elf64_Phdr),               /*sphdr*/
-			   sizeof(Elf64_Shdr),               /*sshdr*/
-			   (long unsigned int)_stat.st_size, /*filesize*/
-			   fail_corrupt,                     /*jump*/
+			   sizeof(Elf64_Phdr),                /*sphdr*/
+			   sizeof(Elf64_Shdr),                /*sshdr*/
+			   (long unsigned int)_stat->st_size, /*filesize*/
+			   fail_corrupt,                      /*jump*/
 			   shdr, phdr);
 
 		shstr = &ELF64_S(shdr)[ELF64_E(mapv)->e_shstrndx];
@@ -183,14 +184,18 @@ WOODYFILE
 
 		for (int i = ELF64_E(mapv)->e_shnum; i;
 		     i--, NEXT_HDR(nshdr, SELF64_S)) {
-			WELF_SCHECK(ELF64_S, nshdr, (long unsigned int)_stat.st_size, fail_corrupt);
+			WELF_SCHECK(ELF64_S, nshdr, (long unsigned int)_stat->st_size, fail_corrupt);
 		}
 
 		nphdr = phdr;
 		for (int i = ELF64_E(mapv)->e_phnum; i;
 		     i--, NEXT_HDR(nphdr, SELF64_P)) {
-			WELF_PCHECK(ELF64_P, nphdr, (long unsigned int)_stat.st_size, fail_corrupt);
+			WELF_PCHECK(ELF64_P, nphdr, (long unsigned int)_stat->st_size, fail_corrupt);
 		}
+		break ;
+	default:
+		dprintf(STDERR_FILENO, "Unsupported elf class\n");
+		goto fail_corrupt;
 	}
 
 	new->name = victim;
@@ -201,39 +206,146 @@ WOODYFILE
 	new->ehdr = mapv;
 	new->phdr = phdr;
 	new->shdr = shdr;
-	memcpy(&new->stat, &_stat, sizeof _stat);
 
-	return new;
+	return 0;
 
 fail_corrupt:
-	munmap(mapv, _stat.st_size);
+	munmap(mapv, _stat->st_size);
 fail_vmap:
 	close(fdv);
 fail_open:
-	free(new);
-fail_alloc:
-	return 0;
+	return -1;
 }
 
-
-/*
- * Behavior is undefined if any of data are corrupt
- */
-int
-woody_prepare(WOODYFILE *w)
+void
+wood_close(WOODYFILE *w)
 {
-	
+	munmap(w->map, w->stat.st_size);
+	close(w->fd);
+}
+
+int
+woody_open_pl(const char *pl_path, WOODYPAYLOAD *pl,
+	const char *packsym, const char *unpacksym)
+{
+	WOODYFILE   *wfile;
+	void        *ehdr, *shdr;
+	void        *shndr;
+	void        *symtab = 0;
+	void        *stpack = 0, *stupack = 0;
+	Elf64_Xword symtabn;
+	char        *shstr, *strtab;
+
+	/* there's no sym to unpack */
+	if (0 == packsym ||
+	    0 == unpacksym ||
+	    woody_open(pl_path, &pl->wfile))
+		goto fail_wopen;
+
+	wfile = &pl->wfile;
+
+	ehdr = wfile->ehdr;
+	shdr = wfile->shdr;
+
+#define PL_GETPACKER(ELF)						\
+	do {								\
+		shstr = ELF##_S(shdr)[ELF##_E(ehdr)->e_shstrndx].sh_offset + \
+			(char *)wfile->map;				\
+		shndr = shdr;						\
+		for (int i = ELF##_E(ehdr)->e_shnum; i;			\
+		     i--, NEXT_HDR(shndr, SELF##_S)) {			\
+			/* GOD FORBIDS */				\
+			if (!symtab &&					\
+			    0 == strcmp(".symtab", shstr + ELF##_S(shndr)->sh_name)) { \
+				symtabn = ELF##_S(shndr)->sh_size / S##ELF##_ST; \
+				symtab = ELF##_S(shndr)->sh_offset + (char *)wfile->map; \
+			}						\
+			/* GOD FORBIDS */				\
+			if (0 == strcmp(".strtab", shstr + ELF##_S(shndr)->sh_name)) \
+				symstr = ELF##_S(shndr)->sh_offset + (char *)wfile->map; \
+		}							\
+									\
+		if (0 == symtab) {					\
+			dprintf(STDERR_FILENO, "elf section symtab not"	\
+				" found in payload '%s'\n",		\
+				pl_path);				\
+			goto fail;					\
+		}							\
+		if (0 == strtab) {					\
+			dprintf(STDERR_FILENO, "elf section strtab not"	\
+				" found in payload '%s'\n",		\
+				pl_path);				\
+			goto fail;					\
+		}							\
+									\
+		for (Elf64_Xword i = symtabn;				\
+		     i ||  0 == stpack || 0 == stupack;			\
+		     i--, NEXT_HDR(symtab, S##ELF##_ST)) {		\
+			/* GOD FORBIDS */				\
+			if (!stpack &&					\
+			    0 == strcmp(packsym, strtab + ELF##_ST(symtab)->st_name)) \
+				stpack = symtab;			\
+			if (!stupack &&					\
+			    0 == strcmp(unpacksym, strtab + ELF##_ST(symtab)->st_name)) \
+				stupack = symtab;			\
+		}							\
+									\
+		if (0 == stpack ||					\
+		    0 == stupack) {					\
+			dprintf(STDERR_FILENO,				\
+				"could not find symbol '%s'"		\
+				" in payload '%s' symtab\n",		\
+				!stpack ? packsym : unpacksym,		\
+				pl_path);				\
+			goto fail;					\
+		}							\
+									\
+		pl->pack_off = ELF##_ST(stpack)->st_value;		\
+		pl->unpack_off = ELF##_ST(stupack)->st_value;		\
+		pl->pack_sz = ELF##_ST(stpack)->st_size;		\
+		pl->unpack_sz = ELF##_ST(stupack)->st_size;		\
+	} while(0);
+
+
+	switch (wfile->ident[EI_CLASS]) {
+	case ELFCLASS32:
+		PL_GETPACKER(ELF32);
+		break ;
+	case ELFCLASS64:
+		PL_GETPACKER(ELF64);
+	}
+
+	return 0;
+
+fail:
+	wood_close(&pl->wfile);
+fail_wopen:
+	return -1;
+}
+
+int
+woody_prepare(WOODYFILE *wfil, WOODYPAYLOAD *plfil, const char *sect)
+{
+	WOODYFILE *wfile = wfil;
+	WOODYPAYLOAD *plfile = plfil;
+
+	if (wfile->ident[EI_CLASS] != plfile->ident[EI_CLASS])
+		goto class_mismatch;
+
+	return 0;
+class_mismatch:
+	return -1;
 }
 
 int
 main(int ac, char **av)
 {
-	WOODYFILE *w;
+	WOODYFILE w;
+	WOODYPAYLOAD pl;
 
-	w = wood_open(av[1]);
-	wood_prepare(w);
-	if (0 == w)
+	if (woody_open(av[1], &w))
 		goto fail;
+
 	return 0;
 fail:
 	return 1;

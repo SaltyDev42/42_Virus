@@ -4,33 +4,34 @@
 # include <elf.h>
 # include <sys/stat.h>
 
-# define WVICTIM(x) x##_victim
-# define ELF32_E(x) ((Elf32_Ehdr *)(x))
-# define ELF32_S(x) ((Elf32_Shdr *)(x))
-# define ELF32_P(x) ((Elf32_Phdr *)(x))
+# define ELF32_E(x)  ((Elf32_Ehdr *)(x))
+# define ELF32_S(x)  ((Elf32_Shdr *)(x))
+# define ELF32_P(x)  ((Elf32_Phdr *)(x))
+# define ELF32_ST(x) ((Elf32_Sym *)(x))
 
-# define SELF32_E sizeof(Elf32_Ehdr)
-# define SELF32_S sizeof(Elf32_Shdr)
-# define SELF32_P sizeof(Elf32_Phdr)
+# define SELF32_E  sizeof(Elf32_Ehdr)
+# define SELF32_S  sizeof(Elf32_Shdr)
+# define SELF32_P  sizeof(Elf32_Phdr)
+# define SELF32_ST sizeof(Elf32_Sym)
 
-# define ELF64_E(x) ((Elf64_Ehdr *)(x))
-# define ELF64_S(x) ((Elf64_Shdr *)(x))
-# define ELF64_P(x) ((Elf64_Phdr *)(x))
+# define ELF64_E(x)  ((Elf64_Ehdr *)(x))
+# define ELF64_S(x)  ((Elf64_Shdr *)(x))
+# define ELF64_P(x)  ((Elf64_Phdr *)(x))
+# define ELF64_ST(x) ((Elf64_Sym *)(x))
 
-# define SELF64_E sizeof(Elf64_Ehdr)
-# define SELF64_S sizeof(Elf64_Shdr)
-# define SELF64_P sizeof(Elf64_Phdr)
+# define SELF64_E  sizeof(Elf64_Ehdr)
+# define SELF64_S  sizeof(Elf64_Shdr)
+# define SELF64_P  sizeof(Elf64_Phdr)
+# define SELF64_ST sizeof(Elf64_Sym)
 
 typedef struct
 {
-	char *name;
+	const char *name;
 
 	int fd;
-	int WVICTIM(fd);
 	void *map;
-	void *WVICTIM(map);
-
 	struct stat stat;
+
 	unsigned char *ident;
 	void *ehdr;
 	void *phdr;
@@ -39,11 +40,13 @@ typedef struct
 
 typedef struct
 {
-	void *map;
-	void *text;
+	WOODYFILE wfile;
+	Elf64_Off pack_off;
+	Elf64_Xword pack_sz;
 
-	int fd;
-	int ntext;
+	Elf64_Off unpack_off;
+	Elf64_Xword unpack_sz;
+
 } WOODYPAYLOAD;
 
 #endif
