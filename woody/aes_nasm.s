@@ -1,71 +1,55 @@
-;void aes128_enc(__m128i *key_schedule, uint8_t *plainText,uint8_t *cipherText);
-;void aes128_dec(__m128i *key_schedule, uint8_t *cipherText,uint8_t *plainText);
+;void aes128_enc(__m128i *text, uint8_t *key,uint8_t *cipherText);
 
 section .text
+global main
+extern memcmp
 
-%macro AES_KEY_EXPAND 0
+%macro AES_KEY_EXPAND 3 ; %0 : SRC, %1 : DEST, %2 : RCON
+	aeskeygenassist	xmm1, %1, %3
 	pshufd xmm1, xmm1, 0xff
 
-        shufps xmm2, xmm0, 0x10
-        pxor   xmm0, xmm2
-        shufps xmm2, xmm0, 0x8c
-        pxor   xmm0, xmm2
-        pxor   xmm0, xmm1
+        shufps xmm2, %1, 0x10
+        vpxor  %2, xmm2, %1
+        shufps xmm2, %2, 0x8c
+        pxor   %2, xmm2
+        pxor   %2, xmm1
 %endmacro
+
 
 %macro AES_KEY_ASSIGN 0
 	pxor xmm2, xmm2
-	movaps	xmm0, [rdi]
 
-	aeskeygenassist	xmm1, xmm0, 1
-	AES_KEY_EXPAND
-	movaps	xmm3, xmm0
+	AES_KEY_EXPAND [rsi], xmm3, 1
 
-	aeskeygenassist	xmm1, xmm0, 2
-	AES_KEY_EXPAND
-	movaps	xmm4, xmm0
+	AES_KEY_EXPAND xmm3, xmm4, 2
 
-	aeskeygenassist	xmm1, xmm0, 4
-	AES_KEY_EXPAND
-	movaps	xmm5, xmm0
+	AES_KEY_EXPAND xmm4, xmm5, 4
 
-	aeskeygenassist	xmm1, xmm0, 8
-	AES_KEY_EXPAND
-	movaps	xmm6, xmm0
+	AES_KEY_EXPAND xmm5, xmm6, 8
 
-	aeskeygenassist	xmm1, xmm0, 0x10
-	AES_KEY_EXPAND
-	movaps	xmm7, xmm0
+	AES_KEY_EXPAND xmm6, xmm7, 0x10
 
-	aeskeygenassist	xmm1, xmm0, 0x20
-	AES_KEY_EXPAND
-	movaps	xmm8, xmm0
+	AES_KEY_EXPAND xmm7, xmm8, 0x20
 
-	aeskeygenassist	xmm1, xmm0, 0x40
-	AES_KEY_EXPAND
-	movaps	xmm9, xmm0
+	AES_KEY_EXPAND xmm8, xmm9, 0x40
 
-	aeskeygenassist	xmm1, xmm0, 0x80
-	AES_KEY_EXPAND
-	movaps	xmm10, xmm0
+	AES_KEY_EXPAND xmm9, xmm10, 0x80
 
-	aeskeygenassist	xmm1, xmm0, 0x1b
-	AES_KEY_EXPAND
-	movaps	xmm11, xmm0
+	AES_KEY_EXPAND xmm10, xmm11, 0x1b
 
-	aeskeygenassist	xmm1, xmm0, 0x36
-	AES_KEY_EXPAND
-	movaps	xmm12, xmm0
+	AES_KEY_EXPAND xmm11, xmm12, 0x36
 %endmacro
 
 
 aes128_enc:
-	push rbp
-	mov rbp, rsp
 
 	AES_KEY_ASSIGN
+	shr rdx, 4
 
+	pxor		xmm13, xmm13
+.loop_enc:
 	movdqa		xmm1, [rsi]
+	pxor		xmm1, xmm13
 
 	pxor		xmm1, [rdi]
 	aesenc		xmm1, xmm3
@@ -79,19 +63,25 @@ aes128_enc:
 	aesenc		xmm1, xmm11
 	aesenclast	xmm1, xmm12
 
-	movups          [rdx], xmm1
+	movups          [rdi], xmm1
 
-	leave
+	add rdi, 0x10
+	dec rdx
+	test rdx, rdx
+	je .loop_enc
+
 	ret
 
 aes128_dec:
-	push rbp
-	mov rbp, rsp
 
 	AES_KEY_ASSIGN 
+	shr rdx, 4
 
-	movdqu		xmm1, [rsi]
+	pxor		xmm13, xmm13
+.loop_dec:
+	movdqu		xmm1, [rdi]
 	pxor		xmm1, xmm12
+	pxor		xmm1, xmm13
 
 	aesimc		xmm11, xmm11
 	aesdec		xmm1, xmm11
@@ -112,9 +102,55 @@ aes128_dec:
 	aesimc		xmm3, xmm3
 	aesdec		xmm1, xmm3
 
-	aesdeclast	xmm1, [rdi]
+	aesdeclast	xmm1, [rsi]
 
-	movups          [rdx], xmm1
+	movups          [rdi], xmm1
+	movaps		xmm13, xmm1
 
+	add rdi, 0x10
+	dec rdx
+	test rdx, rdx
+	je .loop_dec
+
+	ret
+
+main:
+	push	rbp
+	mov	rbp, rsp
+
+	sub	rsp, 432
+
+	mov	QWORD [rbp -128], 0x7845124565322154
+	mov	QWORD [rbp -120], 0x9865326598655487
+	mov	QWORD [rbp -144], 0x7845124565322154
+	mov	QWORD [rbp -136], 0x9865326598655487
+
+	mov	QWORD [rbp -96], 0x7845124565322154
+	mov	QWORD [rbp -88], 0x9865326598655487
+	mov	QWORD [rbp -112], 0x7845124565322154
+	mov	QWORD [rbp -104], 0x9865326598655487
+
+	mov	QWORD  [rbp -80], -6425882231111844309
+	mov	QWORD  [rbp -72], 4345919805280614315
+
+	lea	rdx, [rbp -48]
+	xor	rdx, rdx
+	inc	rdx
+	lea	rsi, [rbp -80]
+	lea	rdi, [rbp -112]
+	call	aes128_enc
+
+	lea	rdx, [rbp -32]
+	xor	rdx, rdx
+	inc	rdx
+	lea	rsi, [rbp -80]
+	lea	rdi, [rbp -112]
+	call	aes128_dec
+
+	mov	edx, 16
+	lea	rsi, [rbp -144]
+	lea	rdi, [rbp -112]
+	
+	call	memcmp wrt ..plt
 	leave
 	ret
