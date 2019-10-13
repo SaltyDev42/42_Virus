@@ -71,36 +71,19 @@
 #define DEFAULT_PAYLOAD_PACK_SYMNAME   "pack"
 #define DEFAULT_PAYLOAD_UNPACK_SYMNAME "unpack"
 
-/* probably unsafe if symbol has no trailing '\0' to mark the end */
-#if 0
-typedef uint32_t hashval_t;
-
-static hashval_t
-hash_string(const char *str)
-{
-	uint32_t hash;
-
-	hash = 85206151;
-	while (*str)
-	{
-		hash ^= *str++ * 85206151;
-		hash += 85206151;
-	}
-	return (hash);
-}
-#endif
-
 int
-woody_open(const char *victim, WOODYFILE *buf)
+wopen(const char *victim, WFILE *buf)
 {
 	struct stat   *_stat;
-	WOODYFILE     *new = buf;
+	WFILE         *new = buf;
 	void          *mapv;
 	void          *shstr, *phdr, *shdr;
 	void	      *nshdr, *nphdr;
-	void          *shdx;
 	unsigned char *ident;
 	int           fdv;
+
+	if (0 == buf)
+		goto fail_open;
 
 	fdv = open(victim, O_RDONLY);
 	if (0 > fdv) {
@@ -154,7 +137,6 @@ woody_open(const char *victim, WOODYFILE *buf)
 			   fail_corrupt,                      /*jump*/
 			   shdr, phdr);
 		shstr = &ELF32_S(shdr)[ELF32_E(mapv)->e_shstrndx];
-		shdx = ELF32_S(shstr)->sh_offset + (char *)mapv;
 		nshdr = shdr;
 		
 		for (int i = ELF32_E(mapv)->e_shnum; i;
@@ -170,7 +152,8 @@ woody_open(const char *victim, WOODYFILE *buf)
 		break ;
 
 	/* same as above for 64 bits */
-	case ELFCLASS64: 
+	case ELFCLASS64:
+		
 		WELF_CHECK(ELF64_E, mapv,
 			   sizeof(Elf64_Phdr),                /*sphdr*/
 			   sizeof(Elf64_Shdr),                /*sshdr*/
@@ -179,7 +162,6 @@ woody_open(const char *victim, WOODYFILE *buf)
 			   shdr, phdr);
 
 		shstr = &ELF64_S(shdr)[ELF64_E(mapv)->e_shstrndx];
-		shdx = ELF64_S(shstr)->sh_offset + (char *)mapv;
 		nshdr = shdr;
 
 		for (int i = ELF64_E(mapv)->e_shnum; i;
@@ -218,28 +200,30 @@ fail_open:
 }
 
 void
-wood_close(WOODYFILE *w)
+wclose(WFILE *w)
 {
 	munmap(w->map, w->stat.st_size);
 	close(w->fd);
 }
 
 int
-woody_open_pl(const char *pl_path, WOODYPAYLOAD *pl,
+wopen_pl(const char *pl_path, WPAYLOAD *pl,
 	const char *packsym, const char *unpacksym)
 {
-	WOODYFILE   *wfile;
+	WFILE       *wfile;
 	void        *ehdr, *shdr;
 	void        *shndr;
 	void        *symtab = 0;
 	void        *stpack = 0, *stupack = 0;
-	Elf64_Xword symtabn;
 	char        *shstr, *strtab;
+	Elf64_Xword symtabn;
 
 	/* there's no sym to unpack */
-	if (0 == packsym ||
+	if (0 == pl_path ||
+	    0 == pl ||
+	    0 == packsym ||
 	    0 == unpacksym ||
-	    woody_open(pl_path, &pl->wfile))
+	    wopen(pl_path, &pl->wfile))
 		goto fail_wopen;
 
 	wfile = &pl->wfile;
@@ -253,7 +237,7 @@ woody_open_pl(const char *pl_path, WOODYPAYLOAD *pl,
 			(char *)wfile->map;				\
 		shndr = shdr;						\
 		for (int i = ELF##_E(ehdr)->e_shnum; i;			\
-		     i--, NEXT_HDR(shndr, SELF##_S)) {			\
+		     i--, NEXT_HDR(shndr, S##ELF##_S)) {		\
 			/* GOD FORBIDS */				\
 			if (!symtab &&					\
 			    0 == strcmp(".symtab", shstr + ELF##_S(shndr)->sh_name)) { \
@@ -262,7 +246,7 @@ woody_open_pl(const char *pl_path, WOODYPAYLOAD *pl,
 			}						\
 			/* GOD FORBIDS */				\
 			if (0 == strcmp(".strtab", shstr + ELF##_S(shndr)->sh_name)) \
-				symstr = ELF##_S(shndr)->sh_offset + (char *)wfile->map; \
+				strtab = ELF##_S(shndr)->sh_offset + (char *)wfile->map; \
 		}							\
 									\
 		if (0 == symtab) {					\
@@ -310,38 +294,220 @@ woody_open_pl(const char *pl_path, WOODYPAYLOAD *pl,
 	switch (wfile->ident[EI_CLASS]) {
 	case ELFCLASS32:
 		PL_GETPACKER(ELF32);
+
 		break ;
 	case ELFCLASS64:
 		PL_GETPACKER(ELF64);
 	}
 
+	if (mprotect(pl->wfile.map + (pl->pack_off & 0xfff),
+		     pl->wfile.stat.st_size,
+		     PROT_READ | PROT_EXEC)) {
+		dprintf(STDERR_FILENO, "fatal: mprotect error\n");
+		goto fail;
+	}
 	return 0;
 
 fail:
-	wood_close(&pl->wfile);
+	wclose(&pl->wfile);
 fail_wopen:
 	return -1;
 }
 
 int
-woody_prepare(WOODYFILE *wfil, WOODYPAYLOAD *plfil, const char *sect)
+winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 {
-	WOODYFILE *wfile = wfil;
-	WOODYPAYLOAD *plfile = plfil;
+	void *tmap;
+	void *ehdr, *phdr;
+	void *wehdr, *wphdr;
+	size_t filsz, added;
+	size_t woffp, offp;
+	size_t szcp;
+	unsigned char *_exec;
+	int  tfd;
+	int  rfd;
+	int  xseg = -1;
 
-	if (wfile->ident[EI_CLASS] != plfile->ident[EI_CLASS])
-		goto class_mismatch;
+	if (0 == wfil ||
+	    0 == wpfil)
+		goto fail;
+
+#define WTARGET "woody"
+
+	tfd = open(WTARGET, O_TRUNC | O_CREAT | O_RDWR, wfil->stat.st_mode);
+	if (-1 == tfd) {
+		dprintf(STDERR_FILENO, "failed to open '%s'\n", WTARGET);
+		goto fail;
+	}
+	rfd = open("/dev/urandom", O_RDONLY);
+	if (-1 == rfd) {
+		dprintf(STDERR_FILENO, "failed to generate key\n");
+		goto fail_l1;
+	}
+
+
+	ehdr = wfil->ehdr;
+	phdr = wfil->phdr;
+
+	switch (wfil->ident[EI_CLASS]) {
+	case ELFCLASS32:
+		/* section is not useful here maybe??*/
+#if 0
+		shstr = (char *)wfil->map + ELF32_S(shdr)[ELF32_E(ehdr)->e_shstrndx].sh_offset;
+		nshdr = shdr;
+		for (int i = ELF32_E(ehdr)->e_shnum - 1; i > -1; i--) {
+			if (0 == strcmp(".text", shstr + ELF32_S(shdr)[i].sh_name)) {
+				tsect = i;
+				break ;
+			}
+		}
+#endif
+
+		/* get the corresponding program header where .text resides */
+		/* assumes that program header is ascending order by vaddr */
+		for (int i = 0; i < ELF32_E(ehdr)->e_phnum; i++) {
+			if (ELF32_P(phdr)[i].p_flags & PF_X) {
+				xseg = i;
+				break ;
+			}
+		}
+		if (xseg == -1) {
+			dprintf(STDERR_FILENO, "Executable segment not found\n");
+			goto fail_l2;
+		}
+		break ;
+	case ELFCLASS64:
+	}
+	/* assumes data is after rodata and rodata is after text */
+
+	filsz = wfil->stat.st_size;
+	/* unpacker size */
+	added = wpfil->unpack_sz; /* unpacker sz */
+	added += WPACKER_TSIZE; /* packer header size */
+#if 0 
+	/* ?? */
+	added += 0xfff;
+	added &= ~0xfff; /* align */
+	/* ... */
+#else
+	added += 0xf;
+	added &= ~0xf;
+#endif
+
+	filsz += added;
+	if (ftruncate(tfd, filsz)) {
+		dprintf(STDERR_FILENO, "fatal ftruncate error\n");
+		goto fail;
+	}
+
+	tmap = WWMAP(tfd, filsz);
+	if (MAP_FAILED == tmap) {
+		dprintf(STDERR_FILENO, "fatal: mmap error\n");
+		goto fail;
+	}
+	// unpack(char *map, void *key, size_t n) 
+	switch (wfil->ident[EI_CLASS]) {
+	case ELFCLASS32:
+		/* copy elf headers*/
+		wehdr = memcpy(tmap, ehdr, SELF32_E);
+		offp = SELF32_E;
+		/* copy program headers */
+		szcp = ELF32_E(ehdr)->e_phnum * ELF32_E(ehdr)->e_phentsize;
+		wphdr = memcpy(tmap + offp, phdr, szcp);
+		offp += szcp;
+		/* copy everything that's behind exec segment offset */
+		szcp = ELF32_P(phdr)[xseg].p_offset - offp;
+		memcpy(tmap + offp, wfil->map + offp, szcp);
+		offp += szcp;
+
+		woffp = offp;
+		_exec = memcpy(tmap + woffp,
+			       /* sequence to copy in byte for header */
+			       "\x48\x8d\x35\x4f\x00\x00\x00"
+			       /* 0x7 */
+			       "\x48\x31\xff"
+			       "\x48\x31\xd2"
+			       "\x66\xba\x0b\x00"
+			       "\x40\xb7\x01"
+			       "\x48\x31\xc0"
+			       "\xb0\x01"
+			       /* --------------- ---------- */
+			       /* 0x19 syscall */
+			       "\x0f\x05"
+			       /* 0x1b  (0x1e load .text rel) // to do dyn */
+			       "\x48\x8d\x3d\x42""\x00\x00\x00"
+			       /* 0x22 load key address rip rel addr // ok */
+			       "\x48\x8d\x35\x47""\x00\x00\x00"
+			       /* 0x29 mov rdx, size // to do dyn */
+			       "\x48\xba""\x00\x00\x00\x00""\x00\x00\x00\x00"
+			       /* 0x33 packer call // ok */
+			       "\xe8\x48\x00\x00""\x00"
+			       /* 0x38 lea rsi, rip - 0x3f (_init sym) // ok */
+			       "\x48\x8d\x3d\xc1""\xff\xff\xff"
+			       /* 0x3f mov rsi, PLACE HOLDER // dyn */
+			       "\x48\xbe""\x00\x00\x00\x00""\x00\x00\x00\x00"
+			       /* 0x49 */
+			       "\x31\xd2\xb2\x05""\xb0\x0a\x0f\x05"
+			       /* 0x51 jmp near rel addr + 0x26 // dyn jump unpack */
+			       "\xe8\x26\x00\x00""\x00"
+			       /* 0x56 ____________ should jump over*/
+			       /*__WOOODY__ , 0xa 0 STRING*/
+			       "\x5f\x5f\x57\x4f\x4f\x44\x59\x5f"
+			       "\x5f\x0a\x00\x00\x00\x00\x00\x00"
+			       "\x00\x00\x00\x00\x00\x00\x00\x00"
+			       "\x00\x00"/* alignment for SSE */
+			       /* 0x70 */
+			       /* ... 16 random bytes */
+			       /* 0x80 */
+			       , 0x70);
+		woffp += 0x70;
+
+		/*uranddom*/
+		read(rand, &0x70[_exec], 16);
+		/* key */
+
+		/* offset to the real section .text */
+		*((__UINT_LEAST32_TYPE__ *)(&0x1e[_exec])) = ;
+		/* size to unpack */
+		*((__UINT_LEAST64_TYPE__ *)(&0x2b[_exec])) = ;
+		/* segment size for mprotect */
+		*((__UINT_LEAST64_TYPE__ *)(&0x48[_exec])) = ;
+		/* jump to init */
+		*((__INT_LEAST32_TYPE__ *)(&0x52[_exec])) = ;
+
+		/**/
+		
+		ELF32_P(wphdr)[xseg].p_filesz += added;
+		/* 
+		 * offsets them so the original program does not segfaults 
+		 * when using relative address 
+		 */
+		for (int i = xseg + 1; i < ELF32_E(wehdr)->e_phnum; i++) {
+			ELF32_P(wphdr)[i].p_offset += added;
+			ELF32_P(wphdr)[i].p_vaddr  += added;
+			ELF32_P(wphdr)[i].p_paddr  += added;
+		}
+		/* TODO MEMCPY everything that is inferior to wphdr[xseg].p_offset */
+		
+	case ELFCLASS64:
+	default:
+		break;
+	}
 
 	return 0;
-class_mismatch:
+fail_l2:
+	close(rfd);
+fail_l1:
+	close(tfd);
+fail:
 	return -1;
 }
 
 int
 main(int ac, char **av)
 {
-	WOODYFILE w;
-	WOODYPAYLOAD pl;
+	WFILE w;
+	WPAYLOAD pl;
 
 	if (woody_open(av[1], &w))
 		goto fail;

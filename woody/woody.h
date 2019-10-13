@@ -24,6 +24,8 @@
 # define SELF64_P  sizeof(Elf64_Phdr)
 # define SELF64_ST sizeof(Elf64_Sym)
 
+# define WPACKER_TSIZE 0x80
+
 typedef struct
 {
 	const char *name;
@@ -36,17 +38,17 @@ typedef struct
 	void *ehdr;
 	void *phdr;
 	void *shdr;
-} WOODYFILE;
+} WFILE;
 
 typedef struct
 {
-	WOODYFILE wfile;
+	WFILE wfile;
 	Elf64_Off pack_off;
 	Elf64_Xword pack_sz;
 
 	Elf64_Off unpack_off;
 	Elf64_Xword unpack_sz;
 
-} WOODYPAYLOAD;
+} WPAYLOAD;
 
 #endif
