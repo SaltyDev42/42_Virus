@@ -15,7 +15,7 @@
 #define WMAP(fd, size, prot, flag) mmap(0, size, prot, flag, fd, 0)
 
 #define VICTIM_MAPFLAG (MAP_PRIVATE)
-#define VICTIM_MAPPROT (PROT_READ)
+#define VICTIM_MAPPROT (PROT_READ | PROT_WRITE)
 #define WVMAP(fd, size) WMAP(fd, size, VICTIM_MAPPROT, VICTIM_MAPFLAG)
 
 #define WOOD_MAPFLAG (MAP_SHARED)
@@ -29,17 +29,21 @@
 		dprintf(STDERR_FILENO, "Architecture unsupported\n");	\
 		goto jump;						\
 	}								\
-	if (ELF_HDR(ptr)->e_phoff >= (filesize)	||			\
-	    ELF_HDR(ptr)->e_phoff + ELF_HDR(ptr)->e_phentsize		\
-	    * ELF_HDR(ptr)->e_phnum > (filesize) ||			\
-	    ELF_HDR(ptr)->e_phentsize != (sphdr) ||			\
+	if ((ELF_HDR(ptr)->e_phnum &&					\
+	     (ELF_HDR(ptr)->e_phoff >= (filesize) ||			\
+	      ELF_HDR(ptr)->e_phoff + ELF_HDR(ptr)->e_phentsize		\
+	      * ELF_HDR(ptr)->e_phnum > (filesize) ||			\
+	      ELF_HDR(ptr)->e_phentsize != (sphdr)))			\
+	    /* */							\
+	    ||								\
 	    /* section headers */					\
-	    ELF_HDR(ptr)->e_shoff >= (filesize) ||			\
-	    ELF_HDR(ptr)->e_shoff + ELF_HDR(ptr)->e_shentsize		\
-	    * ELF_HDR(ptr)->e_shnum > (filesize) ||			\
-	    ELF_HDR(ptr)->e_shentsize != (sshdr) ||			\
-	    ELF_HDR(ptr)->e_shstrndx >= ELF_HDR(ptr)->e_shnum) {	\
-		dprintf(STDERR_FILENO, "Elf is corrupted\n");		\
+	    (ELF_HDR(ptr)->e_shnum &&					\
+	     (ELF_HDR(ptr)->e_shoff >= (filesize) ||			\
+	      ELF_HDR(ptr)->e_shoff + ELF_HDR(ptr)->e_shentsize		\
+	      * ELF_HDR(ptr)->e_shnum > (filesize) ||			\
+	      ELF_HDR(ptr)->e_shentsize != (sshdr) ||			\
+	      ELF_HDR(ptr)->e_shstrndx >= ELF_HDR(ptr)->e_shnum))) {	\
+		dprintf(STDERR_FILENO, "1Elf is corrupted\n");		\
 		goto jump;						\
 	}								\
 	(phdr) = ELF_HDR(ptr)->e_phoff + (char *)ptr;			\
@@ -147,10 +151,9 @@ wopen(const char *victim, WFILE *buf)
 
 	/* same as above for 64 bits */
 	case ELFCLASS64:
-		
 		WELF_CHECK(ELF64_E, mapv,
-			   sizeof(Elf64_Phdr),                /*sphdr*/
-			   sizeof(Elf64_Shdr),                /*sshdr*/
+			   SELF64_P,                /*sphdr*/
+			   SELF64_S,                /*sshdr*/
 			   (long unsigned int)_stat->st_size, /*filesize*/
 			   fail_corrupt,                      /*jump*/
 			   shdr, phdr);
@@ -207,8 +210,9 @@ wopen_pl(const char *pl_path, WPAYLOAD *pl,
 	void        *shndr;
 	void        *symtab = 0;
 	void        *stpack = 0, *stupack = 0;
-	char        *shstr, *strtab;
+	char        *shstr, *strtab = 0;
 	Elf64_Xword symtabn;
+	Elf64_Xword toffset = 0;
 
 	/* there's no sym to unpack */
 	if (0 == pl_path ||
@@ -228,7 +232,8 @@ wopen_pl(const char *pl_path, WPAYLOAD *pl,
 		shstr = ELF##_S(shdr)[ELF##_E(ehdr)->e_shstrndx].sh_offset + \
 			(char *)wfile->map;				\
 		shndr = shdr;						\
-		for (int i = ELF##_E(ehdr)->e_shnum; i;			\
+		for (int i = ELF##_E(ehdr)->e_shnum;			\
+		     i || !symtab || !strtab || !toffset;		\
 		     i--, NEXT_HDR(shndr, S##ELF##_S)) {		\
 			/* GOD FORBIDS */				\
 			if (!symtab &&					\
@@ -237,8 +242,13 @@ wopen_pl(const char *pl_path, WPAYLOAD *pl,
 				symtab = ELF##_S(shndr)->sh_offset + (char *)wfile->map; \
 			}						\
 			/* GOD FORBIDS */				\
-			if (0 == strcmp(".strtab", shstr + ELF##_S(shndr)->sh_name)) \
+			if (!strtab &&					\
+			    0 == strcmp(".strtab", shstr + ELF##_S(shndr)->sh_name)) \
 				strtab = ELF##_S(shndr)->sh_offset + (char *)wfile->map; \
+									\
+			if (!toffset &&					\
+			    0 == strcmp(".text", shstr + ELF##_S(shndr)->sh_name)) \
+				toffset = ELF##_S(shndr)->sh_offset;	\
 		}							\
 									\
 		if (0 == symtab) {					\
@@ -249,6 +259,12 @@ wopen_pl(const char *pl_path, WPAYLOAD *pl,
 		}							\
 		if (0 == strtab) {					\
 			dprintf(STDERR_FILENO, "elf section strtab not"	\
+				" found in payload '%s'\n",		\
+				pl_path);				\
+			goto fail;					\
+		}							\
+		if (0 == toffset) {					\
+			dprintf(STDERR_FILENO, "elf section text not"	\
 				" found in payload '%s'\n",		\
 				pl_path);				\
 			goto fail;					\
@@ -276,8 +292,8 @@ wopen_pl(const char *pl_path, WPAYLOAD *pl,
 			goto fail;					\
 		}							\
 									\
-		pl->pack_off = ELF##_ST(stpack)->st_value;		\
-		pl->unpack_off = ELF##_ST(stupack)->st_value;		\
+		pl->pack_off = ELF##_ST(stpack)->st_value + toffset;	\
+		pl->unpack_off = ELF##_ST(stupack)->st_value + toffset;	\
 		pl->pack_sz = ELF##_ST(stpack)->st_size;		\
 		pl->unpack_sz = ELF##_ST(stupack)->st_size;		\
 	} while(0);
@@ -292,10 +308,11 @@ wopen_pl(const char *pl_path, WPAYLOAD *pl,
 		PL_GETPACKER(ELF64);
 	}
 
-	if (mprotect(pl->wfile.map + (pl->pack_off & 0xfff),
+	if (mprotect(wfile->map,
 		     pl->wfile.stat.st_size,
 		     PROT_READ | PROT_EXEC)) {
 		dprintf(STDERR_FILENO, "fatal: mprotect error\n");
+		perror("");
 		goto fail;
 	}
 	return 0;
@@ -345,18 +362,6 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 
 	switch (wfil->ident[EI_CLASS]) {
 	case ELFCLASS64:
-		/* section is not useful here maybe??*/
-#if 0
-		shstr = (char *)wfil->map + ELF64_S(shdr)[ELF64_E(ehdr)->e_shstrndx].sh_offset;
-		nshdr = shdr;
-		for (int i = ELF64_E(ehdr)->e_shnum - 1; i > -1; i--) {
-			if (0 == strcmp(".text", shstr + ELF64_S(shdr)[i].sh_name)) {
-				tsect = i;
-				break ;
-			}
-		}
-#endif
-
 		/* get the corresponding program header where .text resides */
 		/* assumes that program header is ascending order by vaddr */
 		for (int i = 0; i < ELF64_E(ehdr)->e_phnum; i++) {
@@ -496,6 +501,7 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 
 
 		ELF64_P(wphdr)[xseg].p_filesz = ELF64_P(phdr)[xseg].p_filesz + added;
+		ELF64_P(wphdr)[xseg].p_flags |= PF_W;
 		/* 
 		 * offsets them so the original program does not segfaults 
 		 * when using relative address 
@@ -505,6 +511,8 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 			ELF64_P(wphdr)[i].p_vaddr  += added;
 			ELF64_P(wphdr)[i].p_paddr  += added;
 		}
+
+		ELF64_E(wehdr)->e_shoff += added;
 	default:
 		break;
 	}
@@ -530,14 +538,15 @@ main(int ac, char **av)
 	if (wopen(av[1], &w))
 		goto fail;
 
-#define DEFAULT_PAYLOAD_PATH           "./aes_nasm.o"
+#define DEFAULT_PAYLOAD_PATH           "./aes_masm.o"
 
 #define DEFAULT_PAYLOAD_PACKSYM   "aes128_enc"
 #define DEFAULT_PAYLOAD_UNPACKSYM "aes128_dec"
 
-	wopen_pl(DEFAULT_PAYLOAD_PATH, &pl,
-	      DEFAULT_PAYLOAD_PACKSYM,
-	      DEFAULT_PAYLOAD_UNPACKSYM);
+	if (wopen_pl(DEFAULT_PAYLOAD_PATH, &pl,
+		     DEFAULT_PAYLOAD_PACKSYM,
+		     DEFAULT_PAYLOAD_UNPACKSYM))
+		goto fail;
 	winject(&w, &pl);
 	return 0;
 fail:
