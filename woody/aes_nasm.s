@@ -1,8 +1,6 @@
 ;void aes128_enc(__m128i *text, uint8_t *key,uint8_t *cipherText);
 
 section .text
-global main
-extern memcmp
 
 %macro AES_KEY_EXPAND 3 ; %0 : SRC, %1 : DEST, %2 : RCON
 	aeskeygenassist	xmm1, %1, %3
@@ -47,7 +45,7 @@ aes128_enc:
 	shr rdx, 4
 
 	pxor		xmm13, xmm13
-.loop_enc:
+;.loop_enc:
 	movdqa		xmm1, [rsi]
 	pxor		xmm1, xmm13
 
@@ -68,7 +66,7 @@ aes128_enc:
 	add rdi, 0x10
 	dec rdx
 	test rdx, rdx
-	je .loop_enc
+	je -0x55
 
 	ret
 
@@ -78,7 +76,7 @@ aes128_dec:
 	shr rdx, 4
 
 	pxor		xmm13, xmm13
-.loop_dec:
+;.loop_dec:
 	movdqu		xmm1, [rdi]
 	pxor		xmm1, xmm12
 	pxor		xmm1, xmm13
@@ -110,47 +108,47 @@ aes128_dec:
 	add rdi, 0x10
 	dec rdx
 	test rdx, rdx
-	je .loop_dec
+	je -0x88
 
 	ret
 
-main:
-	push	rbp
-	mov	rbp, rsp
+;; main:
+;; 	push	rbp
+;; 	mov	rbp, rsp
 
-	sub	rsp, 432
+;; 	sub	rsp, 432
 
-	mov	QWORD [rbp -128], 0x7845124565322154
-	mov	QWORD [rbp -120], 0x9865326598655487
-	mov	QWORD [rbp -144], 0x7845124565322154
-	mov	QWORD [rbp -136], 0x9865326598655487
+;; 	mov	QWORD [rbp -128], 0x7845124565322154
+;; 	mov	QWORD [rbp -120], 0x9865326598655487
+;; 	mov	QWORD [rbp -144], 0x7845124565322154
+;; 	mov	QWORD [rbp -136], 0x9865326598655487
 
-	mov	QWORD [rbp -96], 0x7845124565322154
-	mov	QWORD [rbp -88], 0x9865326598655487
-	mov	QWORD [rbp -112], 0x7845124565322154
-	mov	QWORD [rbp -104], 0x9865326598655487
+;; 	mov	QWORD [rbp -96], 0x7845124565322154
+;; 	mov	QWORD [rbp -88], 0x9865326598655487
+;; 	mov	QWORD [rbp -112], 0x7845124565322154
+;; 	mov	QWORD [rbp -104], 0x9865326598655487
 
-	mov	QWORD  [rbp -80], -6425882231111844309
-	mov	QWORD  [rbp -72], 4345919805280614315
+;; 	mov	QWORD  [rbp -80], -6425882231111844309
+;; 	mov	QWORD  [rbp -72], 4345919805280614315
 
-	lea	rdx, [rbp -48]
-	xor	rdx, rdx
-	inc	rdx
-	lea	rsi, [rbp -80]
-	lea	rdi, [rbp -112]
-	call	aes128_enc
+;; 	lea	rdx, [rbp -48]
+;; 	xor	rdx, rdx
+;; 	inc	rdx
+;; 	lea	rsi, [rbp -80]
+;; 	lea	rdi, [rbp -112]
+;; 	call	aes128_enc
 
-	lea	rdx, [rbp -32]
-	xor	rdx, rdx
-	inc	rdx
-	lea	rsi, [rbp -80]
-	lea	rdi, [rbp -112]
-	call	aes128_dec
+;; 	lea	rdx, [rbp -32]
+;; 	xor	rdx, rdx
+;; 	inc	rdx
+;; 	lea	rsi, [rbp -80]
+;; 	lea	rdi, [rbp -112]
+;; 	call	aes128_dec
 
-	mov	edx, 16
-	lea	rsi, [rbp -144]
-	lea	rdi, [rbp -112]
+;; 	mov	edx, 16
+;; 	lea	rsi, [rbp -144]
+;; 	lea	rdi, [rbp -112]
 	
-	call	memcmp wrt ..plt
-	leave
-	ret
+;; 	call	memcmp wrt ..plt
+;; 	leave
+;; 	ret

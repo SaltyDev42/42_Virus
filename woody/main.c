@@ -66,18 +66,13 @@
 
 #define NEXT_HDR(hdr, s)           (hdr) = (((char *)(hdr)) + (s))
 
-#define DEFAULT_PAYLOAD_PATH           "./BUILD/payload.o"
-
-#define DEFAULT_PAYLOAD_PACK_SYMNAME   "pack"
-#define DEFAULT_PAYLOAD_UNPACK_SYMNAME "unpack"
-
 int
 wopen(const char *victim, WFILE *buf)
 {
 	struct stat   *_stat;
 	WFILE         *new = buf;
 	void          *mapv;
-	void          *shstr, *phdr, *shdr;
+	void          *phdr, *shdr;
 	void	      *nshdr, *nphdr;
 	unsigned char *ident;
 	int           fdv;
@@ -136,7 +131,6 @@ wopen(const char *victim, WFILE *buf)
 			   (long unsigned int)_stat->st_size, /*filesize*/
 			   fail_corrupt,                      /*jump*/
 			   shdr, phdr);
-		shstr = &ELF32_S(shdr)[ELF32_E(mapv)->e_shstrndx];
 		nshdr = shdr;
 		
 		for (int i = ELF32_E(mapv)->e_shnum; i;
@@ -160,8 +154,6 @@ wopen(const char *victim, WFILE *buf)
 			   (long unsigned int)_stat->st_size, /*filesize*/
 			   fail_corrupt,                      /*jump*/
 			   shdr, phdr);
-
-		shstr = &ELF64_S(shdr)[ELF64_E(mapv)->e_shstrndx];
 		nshdr = shdr;
 
 		for (int i = ELF64_E(mapv)->e_shnum; i;
@@ -317,11 +309,12 @@ fail_wopen:
 int
 winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 {
+	void (*packer)(void *, void *, size_t) = wpfil->wfile.map + wpfil->pack_off;
 	void *tmap;
 	void *ehdr, *phdr;
 	void *wehdr, *wphdr;
 	size_t filsz, added;
-	size_t woffp, offp;
+	size_t offp;
 	size_t szcp;
 	unsigned char *_exec;
 	int  tfd;
@@ -339,6 +332,7 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 		dprintf(STDERR_FILENO, "failed to open '%s'\n", WTARGET);
 		goto fail;
 	}
+#undef WTARGET
 	rfd = open("/dev/urandom", O_RDONLY);
 	if (-1 == rfd) {
 		dprintf(STDERR_FILENO, "failed to generate key\n");
@@ -350,13 +344,13 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 	phdr = wfil->phdr;
 
 	switch (wfil->ident[EI_CLASS]) {
-	case ELFCLASS32:
+	case ELFCLASS64:
 		/* section is not useful here maybe??*/
 #if 0
-		shstr = (char *)wfil->map + ELF32_S(shdr)[ELF32_E(ehdr)->e_shstrndx].sh_offset;
+		shstr = (char *)wfil->map + ELF64_S(shdr)[ELF64_E(ehdr)->e_shstrndx].sh_offset;
 		nshdr = shdr;
-		for (int i = ELF32_E(ehdr)->e_shnum - 1; i > -1; i--) {
-			if (0 == strcmp(".text", shstr + ELF32_S(shdr)[i].sh_name)) {
+		for (int i = ELF64_E(ehdr)->e_shnum - 1; i > -1; i--) {
+			if (0 == strcmp(".text", shstr + ELF64_S(shdr)[i].sh_name)) {
 				tsect = i;
 				break ;
 			}
@@ -365,8 +359,8 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 
 		/* get the corresponding program header where .text resides */
 		/* assumes that program header is ascending order by vaddr */
-		for (int i = 0; i < ELF32_E(ehdr)->e_phnum; i++) {
-			if (ELF32_P(phdr)[i].p_flags & PF_X) {
+		for (int i = 0; i < ELF64_E(ehdr)->e_phnum; i++) {
+			if (ELF64_P(phdr)[i].p_flags & PF_X) {
 				xseg = i;
 				break ;
 			}
@@ -376,7 +370,9 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 			goto fail_l2;
 		}
 		break ;
-	case ELFCLASS64:
+
+	default:
+		break;
 	}
 	/* assumes data is after rodata and rodata is after text */
 
@@ -407,21 +403,20 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 	}
 	// unpack(char *map, void *key, size_t n) 
 	switch (wfil->ident[EI_CLASS]) {
-	case ELFCLASS32:
+	case ELFCLASS64:
 		/* copy elf headers*/
-		wehdr = memcpy(tmap, ehdr, SELF32_E);
-		offp = SELF32_E;
+		wehdr = memcpy(tmap, ehdr, SELF64_E);
+		offp = SELF64_E;
 		/* copy program headers */
-		szcp = ELF32_E(ehdr)->e_phnum * ELF32_E(ehdr)->e_phentsize;
+		szcp = ELF64_E(ehdr)->e_phnum * ELF64_E(ehdr)->e_phentsize;
 		wphdr = memcpy(tmap + offp, phdr, szcp);
 		offp += szcp;
 		/* copy everything that's behind exec segment offset */
-		szcp = ELF32_P(phdr)[xseg].p_offset - offp;
+		szcp = ELF64_P(phdr)[xseg].p_offset - offp;
 		memcpy(tmap + offp, wfil->map + offp, szcp);
 		offp += szcp;
 
-		woffp = offp;
-		_exec = memcpy(tmap + woffp,
+		_exec = memcpy(tmap + offp,
 			       /* sequence to copy in byte for header */
 			       "\x48\x8d\x35\x4f\x00\x00\x00"
 			       /* 0x7 */
@@ -453,47 +448,70 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 			       /* 0x56 ____________ should jump over*/
 			       /*__WOOODY__ , 0xa 0 STRING*/
 			       "\x5f\x5f\x57\x4f\x4f\x44\x59\x5f"
-			       "\x5f\x0a\x00\x00\x00\x00\x00\x00"
-			       "\x00\x00\x00\x00\x00\x00\x00\x00"
-			       "\x00\x00"/* alignment for SSE */
+			       "\x5f\x0a\x00\x90\x90\x90\x90\x90"
+			       "\x90\x90\x90\x90\x90\x90\x90\x90"
+			       "\x90\x90"/* alignment for SSE */
 			       /* 0x70 */
 			       /* ... 16 random bytes */
 			       /* 0x80 */
 			       , 0x70);
-		woffp += 0x70;
 
-		/*uranddom*/
-		read(rand, &0x70[_exec], 16);
-		/* key */
+		/* urandom key */
+		read(rfd, &0x70[_exec], 16);
+		/* copy the unpacker */
+		memcpy(_exec + 0x80,
+		       wpfil->wfile.map + wpfil->unpack_off,
+		       wpfil->unpack_sz);
 
+		ELF64_P(phdr)[xseg].p_filesz = (ELF64_P(phdr)[xseg].p_filesz + 0xf) & ~0xf;
+		offp += ELF64_P(phdr)[xseg].p_filesz;
+
+		/* copy the .text */
+		memcpy(_exec + added,
+		       wfil->map + ELF64_P(phdr)[xseg].p_offset,
+		       ELF64_P(phdr)[xseg].p_filesz);
+
+		/* call packer to encrypt .text*/
+		packer(_exec + added, &0x70[_exec], ELF64_P(phdr)[xseg].p_filesz);
+		memcpy(tmap + added + offp,
+		       wfil->map + offp,
+		       wfil->stat.st_size - offp);
+
+		/*
+		 *TODO
+		 * 1. before calling packer copy .text into shared map // ok
+		 * 2. call packer // ok
+		 * 3. copy unpacker into binary // ok
+		 * 4. copy the rest
+		 * 5. test the shit
+		 */
 		/* offset to the real section .text */
-		*((__UINT_LEAST32_TYPE__ *)(&0x1e[_exec])) = ;
+		*((__UINT_LEAST32_TYPE__ *)(&0x1e[_exec])) = added - 0x22;
 		/* size to unpack */
-		*((__UINT_LEAST64_TYPE__ *)(&0x2b[_exec])) = ;
+		*((__UINT_LEAST64_TYPE__ *)(&0x2b[_exec])) = ELF64_P(phdr)[xseg].p_filesz;
 		/* segment size for mprotect */
-		*((__UINT_LEAST64_TYPE__ *)(&0x48[_exec])) = ;
-		/* jump to init */
-		*((__INT_LEAST32_TYPE__ *)(&0x52[_exec])) = ;
+		*((__UINT_LEAST64_TYPE__ *)(&0x48[_exec])) = ELF64_P(phdr)[xseg].p_filesz + added;
+		/* jump to .text init */
+		*((__INT_LEAST32_TYPE__ *)(&0x52[_exec])) = added - 0x56;
 
-		/**/
-		
-		ELF32_P(wphdr)[xseg].p_filesz += added;
+
+		ELF64_P(wphdr)[xseg].p_filesz = ELF64_P(phdr)[xseg].p_filesz + added;
 		/* 
 		 * offsets them so the original program does not segfaults 
 		 * when using relative address 
 		 */
-		for (int i = xseg + 1; i < ELF32_E(wehdr)->e_phnum; i++) {
-			ELF32_P(wphdr)[i].p_offset += added;
-			ELF32_P(wphdr)[i].p_vaddr  += added;
-			ELF32_P(wphdr)[i].p_paddr  += added;
+		for (int i = xseg + 1; i < ELF64_E(wehdr)->e_phnum; i++) {
+			ELF64_P(wphdr)[i].p_offset += added;
+			ELF64_P(wphdr)[i].p_vaddr  += added;
+			ELF64_P(wphdr)[i].p_paddr  += added;
 		}
-		/* TODO MEMCPY everything that is inferior to wphdr[xseg].p_offset */
-		
-	case ELFCLASS64:
 	default:
 		break;
 	}
 
+	munmap(tmap, filsz);
+	close(tfd);
+	close(rfd);
 	return 0;
 fail_l2:
 	close(rfd);
@@ -509,9 +527,18 @@ main(int ac, char **av)
 	WFILE w;
 	WPAYLOAD pl;
 
-	if (woody_open(av[1], &w))
+	if (wopen(av[1], &w))
 		goto fail;
 
+#define DEFAULT_PAYLOAD_PATH           "./aes_nasm.o"
+
+#define DEFAULT_PAYLOAD_PACKSYM   "aes128_enc"
+#define DEFAULT_PAYLOAD_UNPACKSYM "aes128_dec"
+
+	wopen_pl(DEFAULT_PAYLOAD_PATH, &pl,
+	      DEFAULT_PAYLOAD_PACKSYM,
+	      DEFAULT_PAYLOAD_UNPACKSYM);
+	winject(&w, &pl);
 	return 0;
 fail:
 	return 1;
