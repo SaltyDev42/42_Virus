@@ -501,6 +501,7 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 
 
 		ELF64_P(wphdr)[xseg].p_filesz = ELF64_P(phdr)[xseg].p_filesz + added;
+		ELF64_P(wphdr)[xseg].p_memsz = ELF64_P(wphdr)[xseg].p_filesz;
 		ELF64_P(wphdr)[xseg].p_flags |= PF_W;
 		/* 
 		 * offsets them so the original program does not segfaults 
