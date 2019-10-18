@@ -11,6 +11,10 @@ section .text
 
 default rel
 _L1:
+	push rdi
+	push rdx
+	push rax
+	push rsi
 	lea rsi, [_L2] 		;string
 	xor rdi, rdi
 	xor rdx, rdx
@@ -31,6 +35,10 @@ _L1:
 	mov dl, PROT_READ | PROT_EXEC
 	mov al, __NR_mprotect
 	syscall
+	pop rsi
+	pop rax
+	pop rdx
+	pop rdi
 	jmp _L3
 
 _L2:    db "__WOODY__", 0xa, 00
