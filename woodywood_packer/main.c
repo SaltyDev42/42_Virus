@@ -559,7 +559,8 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 			     n > -1; n--) {
 				ELF64_RELA(rela)[n].r_offset += added;
 				if (ELF64_RELA(rela)[n].r_offset == dyni ||
-				    ELF64_RELA(rela)[n].r_offset == dynf)
+				    ELF64_RELA(rela)[n].r_offset == dynf ||
+				    ELF64_R_TYPE(ELF64_RELA(rela)[n].r_info) == R_X86_64_RELATIVE)
 					ELF64_RELA(rela)[n].r_addend += added;
 				if (plt & 0x2)
 					*((__UINT_LEAST64_TYPE__ *)
