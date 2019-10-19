@@ -307,7 +307,6 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 	Elf64_Sxword    afilvirt_diff,
 			gfilvirt_diff = -1;
 
-
 	char *shstroff;
 	size_t filsz, added;
 	size_t offp;
@@ -527,13 +526,13 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 			case DT_FINI_ARRAY:
 				ELF64_DYN(dyn)->d_un.d_ptr += added;
 				dynf = ELF64_DYN(dyn)->d_un.d_ptr;
-				*((__UINT_LEAST64_TYPE__ *)(dynf + tmap - gfilvirt_diff)) +=
+				*((__UINT_LEAST64_TYPE__ *)(dynf + tmap - afilvirt_diff)) +=
 					added;
 				break ;
 			case DT_INIT_ARRAY:
 				ELF64_DYN(dyn)->d_un.d_ptr += added;
 				dyni = ELF64_DYN(dyn)->d_un.d_ptr;
-				*((__UINT_LEAST64_TYPE__ *)(dyni + tmap - gfilvirt_diff)) +=
+				*((__UINT_LEAST64_TYPE__ *)(dyni + tmap - afilvirt_diff)) +=
 					added;
 				break ;
 			}
@@ -601,8 +600,8 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 	/* segment size for mprotect */
 	*((__UINT_LEAST64_TYPE__ *)(&0x45[_exec])) = ELF64_P(wphdr)[xseg].p_filesz;
 	/* patch the jmp so it goes to _start@.text*/
-	*((__INT_LEAST32_TYPE__ *)(&0x5a[_exec])) = ELF64_E(wehdr)->e_entry -
-		ELF64_P(wphdr)[xseg].p_offset -
+	*((__INT_LEAST32_TYPE__ *)(&0x5a[_exec])) = added + ELF64_E(wehdr)->e_entry -
+		ELF64_P(wphdr)[xseg].p_vaddr -
 		0x5e;
 
 	ELF64_E(wehdr)->e_entry = ELF64_P(wphdr)[xseg].p_vaddr;
