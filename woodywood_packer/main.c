@@ -53,9 +53,12 @@
 #define WELF_SCHECK(ELF_HDR, ptr, filesize, jump)			\
 	if ((ELF_HDR(ptr)->sh_name & SHN_LORESERVE) == SHN_LORESERVE)	\
 		continue;						\
-	if (ELF_HDR(ptr)->sh_offset >= (filesize) ||			\
-	    ELF_HDR(ptr)->sh_offset + ELF_HDR(ptr)->sh_size >= (filesize)) { \
-		dprintf(STDERR_FILENO, "Elf is corrupted\n");		\
+	printf("%#lx >= %#lx\n", ELF_HDR(ptr)->sh_offset,  (filesize));	\
+	printf("%#lx >= %#lx\n\n", ELF_HDR(ptr)->sh_offset, ELF_HDR(ptr)->sh_type);	\
+	if (ELF_HDR(ptr)->sh_type != SHT_NOBITS	&&			\
+	    (ELF_HDR(ptr)->sh_offset >= (filesize) ||			\
+	     ELF_HDR(ptr)->sh_offset + ELF_HDR(ptr)->sh_size >= (filesize))) { \
+		dprintf(STDERR_FILENO, "iciElf is corrupted\n");		\
 		goto jump;						\
 	}
 
@@ -333,7 +336,9 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 
 	void *rela, *dyn = 0;
 	Elf64_Off dyni = 0, dynf = 0;
-	Elf64_Sxword filvirt_diff;
+	Elf64_Sxword    afilvirt_diff,
+			gfilvirt_diff = -1;
+
 
 	char *shstroff;
 	size_t filsz, added;
@@ -344,7 +349,8 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 	int  rfd;
 	int     dseg = -1,
 		xseg = -1,
-		xsec = -1;
+		xsec = -1,
+		plt = 0;
 	
 	if (0 == wfil ||
 	    0 == wpfil)
@@ -390,13 +396,17 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 		}
 
 		/* finding the corresponding section of segment*/
+		shstroff = ELF64_S(shdr)[ELF64_E(ehdr)->e_shstrndx].sh_offset + (char *)wfil->map;
 		for (int i = 0; i < ELF64_E(ehdr)->e_shnum; i++) {
-			if (ELF64_P(phdr)[xseg].p_offset == ELF64_S(shdr)[i].sh_offset) {
+			if (ELF64_P(phdr)[xseg].p_offset == ELF64_S(shdr)[i].sh_offset)
 				xsec = i;
-				break ;
-			}
+			if (gfilvirt_diff == -1 &&
+			    0 == strcmp(".got", ELF64_S(shdr)[i].sh_name + shstroff))
+				gfilvirt_diff = ELF64_S(shdr)[i].sh_addr - 
+					ELF64_S(shdr)[i].sh_offset;
 		}
-		if (xsec == -1) {
+		if (xsec == -1 ||
+		    gfilvirt_diff == -1) {
 			dprintf(STDERR_FILENO, "Critical section header not found\n");
 			goto fail_l2;
 		}
@@ -541,9 +551,9 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 				dprintf(STDERR_FILENO, "dynamic section is missing\n");
 				goto fail_l3;
 			}
-			filvirt_diff = ELF64_P(wphdr)[dseg].p_vaddr - ELF64_P(wphdr)[dseg].p_offset;
+			afilvirt_diff = ELF64_P(wphdr)[dseg].p_vaddr - ELF64_P(wphdr)[dseg].p_offset;
 			for (;DT_NULL != ELF64_DYN(dyn)->d_tag; NEXT_HDR(dyn, SELF64_DYN)) {
-				switch (ELF64_DYN(dyn)->d_tag){
+				switch (ELF64_DYN(dyn)->d_tag) {
 				case DT_PLTGOT:
 				case DT_FINI:
 				case DT_INIT:
@@ -552,12 +562,14 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 				case DT_FINI_ARRAY:
 					ELF64_DYN(dyn)->d_un.d_ptr += added;
 					dynf = ELF64_DYN(dyn)->d_un.d_ptr;
-					*((__UINT_LEAST64_TYPE__ *)(dynf + tmap - filvirt_diff)) += added;
+					*((__UINT_LEAST64_TYPE__ *)(dynf + tmap - gfilvirt_diff)) +=
+						added;
 					break ;
 				case DT_INIT_ARRAY:
 					ELF64_DYN(dyn)->d_un.d_ptr += added;
 					dyni = ELF64_DYN(dyn)->d_un.d_ptr;
-					*((__UINT_LEAST64_TYPE__ *)(dyni + tmap - filvirt_diff)) += added;
+					*((__UINT_LEAST64_TYPE__ *)(dyni + tmap - gfilvirt_diff)) +=
+						added;
 					break ;
 				}
 			}
@@ -568,15 +580,17 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 			}
 		}
 
+		if (0 == strcmp(".plt", shstroff + ELF64_S(wshdr)[xsec + 1].sh_name))
+			plt = 1;
 		/* patch rela offset and addend */
-		shstroff = ELF64_S(wshdr)[ELF64_E(wehdr)->e_shstrndx].sh_offset + (char *)tmap;
 		for (int i = 0; i < ELF64_E(wehdr)->e_shnum; i++) {
 			if (ELF64_S(wshdr)[i].sh_type == SHT_RELA) {
 				if (ELF64_S(wshdr)[i].sh_offset == 0 ||
 				    ELF64_S(wshdr)[i].sh_entsize != SELF64_RELA)
 					continue ;
-
 				rela = ELF64_S(wshdr)[i].sh_offset + tmap;
+				if (plt && strcmp(".rela.plt", shstroff + ELF64_S(wshdr)[i].sh_name))
+					plt |= 0x2;
 				for (int n = ELF64_S(wshdr)[i].sh_size /
 					     ELF64_S(wshdr)[i].sh_entsize - 1;
 				     n > -1; n--) {
@@ -584,12 +598,17 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 					if (ELF64_RELA(rela)[n].r_offset == dyni ||
 					    ELF64_RELA(rela)[n].r_offset == dynf)
 						ELF64_RELA(rela)[n].r_addend += added;
-
+					if (plt & 0x2)
+						*((__UINT_LEAST64_TYPE__ *)
+							(tmap + 
+							 ELF64_RELA(rela)[n].r_offset - 
+							 gfilvirt_diff)
+						) += added;
 				}
 			}
 		}
 		/* 0 == .init  1 == .plt 2 == .text */
-		if (0 != strcmp(".text", shstroff + ELF64_S(wshdr)[xsec + 2].sh_name)) {
+		if (0 != strcmp(".text", shstroff + ELF64_S(wshdr)[xsec + 1 + (plt&1)].sh_name)) {
 			dprintf(STDERR_FILENO, "Critical section text not found\n");
 			goto fail_l3;
 		}
@@ -609,7 +628,7 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 		/* segment size for mprotect */
 		*((__UINT_LEAST64_TYPE__ *)(&0x45[_exec])) = ELF64_P(phdr)[xseg].p_filesz + added;
 		/* patch the jmp so it goes to _start@.text*/
-		*((__INT_LEAST32_TYPE__ *)(&0x5a[_exec])) = ELF64_S(wshdr)[xsec + 2].sh_offset -
+		*((__INT_LEAST32_TYPE__ *)(&0x5a[_exec])) = ELF64_S(wshdr)[xsec + 1 + (plt&1)].sh_offset -
 			ELF64_P(wphdr)[xseg].p_offset -
 			0x5e;
 
