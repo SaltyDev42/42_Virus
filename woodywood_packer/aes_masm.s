@@ -45,11 +45,11 @@ aes128_enc:
 
 	AES_KEY_ASSIGN
 	shr rdx, 4
+	mov rdx, 2
 
 	pxor		xmm13, xmm13
 .loop_enc:
 	movdqa		xmm1, [rsi]
-	pxor		xmm1, xmm13
 
 	pxor		xmm1, [rdi]
 	aesenc		xmm1, xmm3
@@ -63,12 +63,15 @@ aes128_enc:
 	aesenc		xmm1, xmm11
 	aesenclast	xmm1, xmm12
 
+	pxor		xmm1, xmm13
+	movaps		xmm13, xmm1
 	movups          [rdi], xmm1
+	
 
 	add rdi, 0x10
 	dec rdx
 	test rdx, rdx
-	je .loop_enc
+	jne .loop_enc
 
 	ret
 
@@ -78,41 +81,42 @@ aes128_dec:
 
 	AES_KEY_ASSIGN 
 	shr rdx, 4
+	mov rdx, 2
 
 	pxor		xmm13, xmm13
+	aesimc		xmm11, xmm11
+	aesimc		xmm10, xmm10
+	aesimc		xmm9, xmm9
+	aesimc		xmm8, xmm8
+	aesimc		xmm7, xmm7
+	aesimc		xmm6, xmm6
+	aesimc		xmm5, xmm5
+	aesimc		xmm4, xmm4
+	aesimc		xmm3, xmm3
 .loop_dec:
 	movdqu		xmm1, [rdi]
-	pxor		xmm1, xmm12
 	pxor		xmm1, xmm13
+	movaps		xmm13, xmm1
+	pxor		xmm1, xmm12
 
-	aesimc		xmm11, xmm11
 	aesdec		xmm1, xmm11
-	aesimc		xmm10, xmm10
 	aesdec		xmm1, xmm10
-	aesimc		xmm9, xmm9
 	aesdec		xmm1, xmm9
-	aesimc		xmm8, xmm8
 	aesdec		xmm1, xmm8
-	aesimc		xmm7, xmm7
 	aesdec		xmm1, xmm7
-	aesimc		xmm6, xmm6
 	aesdec		xmm1, xmm6
-	aesimc		xmm5, xmm5
 	aesdec		xmm1, xmm5
-	aesimc		xmm4, xmm4
 	aesdec		xmm1, xmm4
-	aesimc		xmm3, xmm3
 	aesdec		xmm1, xmm3
 
 	aesdeclast	xmm1, [rsi]
 
 	movups          [rdi], xmm1
-	movaps		xmm13, xmm1
 
 	add rdi, 0x10
 	dec rdx
 	test rdx, rdx
-	je .loop_dec
+	jne .loop_dec
 
 	ret
 	.size aes128_dec, .-aes128_dec
