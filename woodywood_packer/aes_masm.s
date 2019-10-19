@@ -45,9 +45,8 @@ aes128_enc:
 
 	AES_KEY_ASSIGN
 	shr rdx, 4
-	mov rdx, 2
 
-	pxor		xmm13, xmm13
+#	pxor		xmm13, xmm13
 .loop_enc:
 	movdqa		xmm1, [rsi]
 
@@ -63,8 +62,8 @@ aes128_enc:
 	aesenc		xmm1, xmm11
 	aesenclast	xmm1, xmm12
 
-	pxor		xmm1, xmm13
-	movaps		xmm13, xmm1
+#	pxor		xmm1, xmm13
+#	movaps		xmm13, xmm1
 	movups          [rdi], xmm1
 	
 
@@ -81,9 +80,8 @@ aes128_dec:
 
 	AES_KEY_ASSIGN 
 	shr rdx, 4
-	mov rdx, 2
 
-	pxor		xmm13, xmm13
+#	pxor		xmm13, xmm13
 	aesimc		xmm11, xmm11
 	aesimc		xmm10, xmm10
 	aesimc		xmm9, xmm9
@@ -95,8 +93,8 @@ aes128_dec:
 	aesimc		xmm3, xmm3
 .loop_dec:
 	movdqu		xmm1, [rdi]
-	pxor		xmm1, xmm13
-	movaps		xmm13, xmm1
+#	pxor		xmm1, xmm13
+#	movaps		xmm13, xmm1
 	pxor		xmm1, xmm12
 
 	aesdec		xmm1, xmm11
