@@ -595,11 +595,6 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 			}
 		}
 	}
-	/* 0 == .init  1 == .plt 2 == .text */
-	if (0 != strcmp(".text", shstroff + ELF64_S(wshdr)[xsec + 1 + (plt&1)].sh_name)) {
-		dprintf(STDERR_FILENO, "Critical section text not found\n");
-		goto fail_l3;
-	}
 
 	/* patch entry point to our packer */
 	/* offset to the real section .text */
