@@ -349,8 +349,7 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 		goto fail_l2;
 	}
 
-	if (ELF64_P(phdr)[xseg].p_vaddr &&
-	    ELF64_P(phdr)[xseg].p_offset) {
+	if (ELF64_P(phdr)[xseg].p_offset) {
 		flag |= 0x4;
 	}
 	/* get the necessary segments */
