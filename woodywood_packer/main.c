@@ -340,8 +340,10 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 	for (int i = 0; i < ELF64_E(ehdr)->e_phnum; i++) {
 		/* get executable segment */
 		if (ELF64_P(phdr)[i].p_flags & PF_X &&
-		    ELF64_P(phdr)[i].p_type == PT_LOAD)
+		    ELF64_P(phdr)[i].p_type == PT_LOAD) {
 			xseg = i;
+			break ;
+		}
 	}
 
 	if (xseg == -1) {
@@ -449,7 +451,7 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 		       /* 0x43 mov rsi, PLACE HOLDER // dyn */
 		       "\x48\xbe""\x00\x00\x00\x00""\x00\x00\x00\x00"
 		       /* 0x4d */
-		       "\x31\xd2\xb2\x05""\xb0\x0a\x0f\x05"
+		       "\x31\xd2\xb2\x05""\xb0\x0a\x90\x90" //  \x0f\x05"
 		       /* 0x55 restore register */
 		       "\x5e\x58\x5a\x5f"
 		       /* 0x59 jmp near rel addr + 0x26 // dyn jump unpack */
@@ -610,25 +612,26 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 		/* segment size for mprotect */
 		*((__UINT_LEAST64_TYPE__ *)(&0x45[_exec])) = xsz;
 		/* patch the jmp so it goes to _start@.text*/
-		*((__INT_LEAST32_TYPE__ *)(&0x5a[_exec])) = (added * 2) + ELF64_E(wehdr)->e_entry -
-			ELF64_S(wshdr)[xsec].sh_addr -
+		*((__INT_LEAST32_TYPE__ *)(&0x5a[_exec])) = (added) + ELF64_E(wehdr)->e_entry -
+			ELF64_P(wphdr)[xseg].p_vaddr -
 			0x5e;
 
 		/* patch entry point */
-		ELF64_E(wehdr)->e_entry = ELF64_S(wshdr)[xsec].sh_addr - added;
+		ELF64_E(wehdr)->e_entry = ELF64_P(wphdr)[xseg].p_vaddr;
 		packer(_exec + added, &0x70[_exec], xsz);
 	} else {
 		/* packer is at the bottomside of the map */
 		/* offset to the real section .text */
-		*((__INT_LEAST32_TYPE__ *)(&0x22[_exec])) = -offp + ELF64_S(wshdr)[xsec].sh_addr - 0x26 + align;
+		*((__INT_LEAST32_TYPE__ *)(&0x22[_exec])) = -offp + ELF64_S(wshdr)[xsec].sh_addr - 0x26 + align - ELF64_P(wphdr)[xseg].p_vaddr;
 		/* point to the start of the segment */
 		*((__INT_LEAST32_TYPE__ *)(&0x3f[_exec])) = -offp - 0x43;
 		/* segment size for mprotect */
 		*((__UINT_LEAST64_TYPE__ *)(&0x45[_exec])) = ELF64_P(wphdr)[xseg].p_memsz;
 		/* patch the jmp so it goes to _start@.text*/
-		*((__INT_LEAST32_TYPE__ *)(&0x5a[_exec])) = -offp + ELF64_E(wehdr)->e_entry - 0x5e;
+		*((__INT_LEAST32_TYPE__ *)(&0x5a[_exec])) = -offp + ELF64_E(wehdr)->e_entry - 0x5e
+			- ELF64_P(wphdr)[xseg].p_vaddr;
 		/* patch entry point */
-		ELF64_E(wehdr)->e_entry = ELF64_P(wphdr)[xseg].p_filesz - added;
+		ELF64_E(wehdr)->e_entry = ELF64_P(wphdr)[xseg].p_filesz - added + ELF64_P(wphdr)[xseg].p_vaddr;
 		printf("__sec offset:%#lx align:%#lx\n", ELF64_S(wshdr)[xsec].sh_offset, align);
 		packer(tmap + ELF64_S(wshdr)[xsec].sh_offset + align, &0x70[_exec], xsz);
 	}
