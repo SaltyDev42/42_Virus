@@ -1,0 +1,3 @@
+[submodule "woodywood_packer/libft"]
+	path = woodywood_packer/libft
+	url = git@github.com:IhateProprietary/libft

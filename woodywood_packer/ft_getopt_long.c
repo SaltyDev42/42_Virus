@@ -6,16 +6,16 @@
 #define OPT_ISLONG(opt) (!ft_strncmp((opt), "--", 2) && (opt)[2] != 0)
 #define OPT_ISEND(opt) (!ft_strcmp((opt), "--"))
 
-int	g_optind_;
-char	*g_optarg_;
-int	g_opterr_ = 1;
+int	_optind;
+char	*_optarg;
+int	_opterr = 1;
 
 static int
-ft_getopt_long_long_no_arg(struct s_options *lopt, char *pname)
+ft_getopt_long_long_no_arg(struct options_s *lopt, char *pname)
 {
-	if (g_optarg_)
+	if (_optarg)
 	{
-		if (g_opterr_)
+		if (_opterr)
 			dprintf(2, "%s: '--%s' doesn't allow an argument\n",
 				pname, lopt->s);
 		return ('?');
@@ -26,13 +26,13 @@ ft_getopt_long_long_no_arg(struct s_options *lopt, char *pname)
 }
 
 static int
-ft_getopt_long_long_req_arg(struct s_options *lopt, char **av, char *pname)
+ft_getopt_long_long_req_arg(struct options_s *lopt, char **av, char *pname)
 {
-	if (!g_optarg_)
-		g_optarg_ = av[g_optind_++];
-	if (!g_optarg_)
+	if (!_optarg)
+		_optarg = av[_optind++];
+	if (!_optarg)
 	{
-		if (g_opterr_)
+		if (_opterr)
 			dprintf(2, "%s: '--%s' options requires an argument\n",
 				pname, lopt->s);
 		return ('?');
@@ -43,7 +43,7 @@ ft_getopt_long_long_req_arg(struct s_options *lopt, char **av, char *pname)
 }
 
 static int
-ft_getopt_long_long_opt_arg(struct s_options *lopt, char *pname)
+ft_getopt_long_long_opt_arg(struct options_s *lopt, char *pname)
 {
 	(void)pname;
 	if (lopt->f)
@@ -52,9 +52,9 @@ ft_getopt_long_long_opt_arg(struct s_options *lopt, char *pname)
 }
 
 static int
-ft_getopt_long_long(struct s_options *lopt, char **av, char *pname)
+ft_getopt_long_long(struct options_s *lopt, char **av, char *pname)
 {
-	g_optind_ += 1;
+	_optind += 1;
 	if (lopt == NULL)
 		return ('?');
 	else if (lopt->has_arg == no_arg)
@@ -68,20 +68,20 @@ ft_getopt_long_long(struct s_options *lopt, char **av, char *pname)
 static void
 ft_getopt_init(char **pname, char **nextchar, char *s)
 {
-	g_optind_ = 1;
+	_optind = 1;
 	*pname = s;
 	*nextchar = "";
 }
 
 struct options_s
-*ft_opt_getstruct_long(char *s,	struct s_options *longopt, char *pname)
+*ft_opt_getstruct_long(char *s,	struct options_s *longopt, char *pname)
 {
 	char	*has_arg;
 	size_t	ncmp;
 
 	has_arg = ft_strchr(s, '=');
 	if (has_arg)
-		g_optarg_ = has_arg + 1;
+		_optarg = has_arg + 1;
 	ncmp = (size_t)has_arg ? (size_t)(has_arg - s) : ft_strlen(s);
 	while (longopt->s != NULL || longopt->has_arg != 0 || \
 	       longopt->f != 0 || longopt->val != 0)
@@ -94,7 +94,7 @@ struct options_s
 	if (longopt->s == NULL && longopt->has_arg == 0 && \
 	    longopt->f == 0 && longopt->val == 0)
 	{
-		if (g_opterr_)
+		if (_opterr)
 			dprintf(2, "%s: unrecognized options '--%.*s'\n", pname,
 				(int)ncmp, s);
 		return (NULL);
@@ -103,7 +103,7 @@ struct options_s
 }
 
 struct options_s
-*ft_opt_getstruct(char s, struct s_options *longopt)
+*ft_opt_getstruct(char s, struct options_s *longopt)
 {
 	while (longopt->s != NULL || longopt->has_arg != 0 || \
 	       longopt->f != 0 || longopt->val != 0)
@@ -116,15 +116,15 @@ struct options_s
 }
 
 static int
-ft_getopt_(char **nextchar, char **av, struct s_options *lopt)
+ft_getopt_(char **nextchar, char **av, struct options_s *lopt)
 {
 	if (lopt->has_arg == opt_arg ||
 	    lopt->has_arg == req_arg)
 	{
 		if ((*nextchar)[1])
-			g_optarg_ = *nextchar + 1;
+			_optarg = *nextchar + 1;
 		else
-			g_optarg_ = av[g_optind_++];
+			_optarg = av[_optind++];
 		*nextchar = "";
 	}
 	else
@@ -135,32 +135,34 @@ ft_getopt_(char **nextchar, char **av, struct s_options *lopt)
 }
 
 int
-ft_getopt_long(int ac, char **av, char *optstr, struct s_options *lopt)
+ft_getopt_long(int ac, char **av, char *optstr, struct options_s *lopt)
 {
 	static char	*nextchar;
 	static char	*pname;
 
-	g_optarg_ = 0;
-	if (g_optind_ == 0)
+	_optarg = 0;
+	if (_optind == 0)
 		ft_getopt_init(&pname, &nextchar, av[0]);
 	if (nextchar == NULL)
 		return (-1);
 	if (*nextchar == 0 &&
-	    (g_optind_ >= ac || av[g_optind_] == 0 || OPT_ISEND(av[g_optind_]))) {
+	    (_optind >= ac || av[_optind] == 0 || OPT_ISEND(av[_optind]))) {
 		nextchar = 0;
 		return (-1);
 	}
-	else if (*nextchar == 0 && OPT_ISLONG(av[g_optind_]))
+	else if (*nextchar == 0 && OPT_ISLONG(av[_optind]))
 		return (ft_getopt_long_long(
-				ft_opt_getstruct_long(av[g_optind_] + 2, lopt, pname),
+				ft_opt_getstruct_long(av[_optind] + 2, lopt, pname),
 				av, pname));
-	else if (*nextchar == 0 && OPT_ISOPT(av[g_optind_]))
-		nextchar = av[g_optind_++] + 1;
-	else if (*nextchar == 0)
-		return (ft_opt_end(&nextchar));
+	else if (*nextchar == 0 && OPT_ISOPT(av[_optind]))
+		nextchar = av[_optind++] + 1;
+	else if (*nextchar == 0) {
+		nextchar = 0;
+		return (-1);
+	}
 	if (ft_strchr(optstr, *nextchar))
 		return (ft_getopt_(&nextchar, av, ft_opt_getstruct(*nextchar, lopt)));
-	if (g_opterr_)
+	if (_opterr)
 		dprintf(2, "%s: unrecognized option '%c'\n", pname, *nextchar++);
 	return ('?');
 }

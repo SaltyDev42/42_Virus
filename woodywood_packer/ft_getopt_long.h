@@ -6,7 +6,7 @@
 /*   By: root <marvin@42.fr>                        +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2017/09/14 11:56:09 by root              #+#    #+#             */
-/*   Updated: 2019/10/07 20:19:10 by virus            ###   ########.fr       */
+/*   Updated: 2019/10/23 10:36:21 by virus            ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
@@ -33,6 +33,6 @@ extern char	*_optarg;
 extern int	_opterr;
 
 int
-ft_getopt_long(int ac, char **av, char *optstring, struct s_options *longopt);
+ft_getopt_long(int ac, char **av, char *optstring, struct options_s *longopt);
 
 #endif

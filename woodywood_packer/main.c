@@ -11,6 +11,7 @@
 #include <string.h>
  
 #include "woody.h"
+#include "ft_getopt_long.h"
 
 #define WMAP(fd, size, prot, flag) mmap(0, size, prot, flag, fd, 0)
 
@@ -87,7 +88,7 @@ wopen(const char *victim, WFILE *buf)
 
 	fdv = open(victim, O_RDONLY);
 	if (0 > fdv) {
-		dprintf(STDERR_FILENO, "fatal: open fail\n");
+		dprintf(STDERR_FILENO, "fatal: failed to open '%s'\n", victim);
 		goto fail_open;
 	}
 
@@ -97,7 +98,7 @@ wopen(const char *victim, WFILE *buf)
 	}
 
 	_stat = &new->stat;
-	if ((__off_t)sizeof(Elf32_Ehdr) > _stat->st_size) {
+	if ((__off_t)SELF64_E > _stat->st_size) {
 		dprintf(STDERR_FILENO, "unsupported file\n");
 		goto fail_vmap;
 	}
@@ -111,26 +112,26 @@ wopen(const char *victim, WFILE *buf)
 	ident = mapv;
 	/* GOD FORBIDS */
 	if (0 != memcmp(ident, ELFMAG, SELFMAG)) {
-		dprintf(STDERR_FILENO, "File is not an elf\n");
+		dprintf(STDERR_FILENO, "'%s' is not an elf\n", victim);
 		goto fail_corrupt;
 	}
 
 	if (0 == ident[EI_CLASS] ||
 	    3 <= ident[EI_CLASS]) {
-		dprintf(STDERR_FILENO, "unsupported file\n");
+		dprintf(STDERR_FILENO, "Unsupported file\n");
 		goto fail_corrupt;
 	}
 
 	/* This program only supports little endian */
 	if (ELFDATA2LSB != ident[EI_DATA]) {
-		dprintf(STDERR_FILENO, "unsupported endianess\n");
+		dprintf(STDERR_FILENO, "Unsupported endianess\n");
 		goto fail_corrupt;
 	}
 
 	/* checking if any segment is past size of file */
 
 	if (ident[EI_CLASS] != ELFCLASS64) {
-		dprintf(STDERR_FILENO, "unsupported architecture");
+		dprintf(STDERR_FILENO, "Unsupported architecture");
 		goto fail_corrupt;
 	}
 
@@ -272,8 +273,12 @@ wopen_pl(const char *pl_path, WPAYLOAD *pl,
 		pl->unpack_off = ELF##_ST(stupack)->st_value + toffset;	\
 		pl->pack_sz = ELF##_ST(stpack)->st_size;		\
 		pl->unpack_sz = ELF##_ST(stupack)->st_size;		\
+		if (0 == pl->unpack_sz) {				\
+			dprintf(STDERR_FILENO, "Symbol '%s' has size "	\
+				"0\n", unpacksym);			\
+			goto fail;					\
+		}							\
 	} while(0);
-
 
 	PL_GETPACKER(ELF64);
 
@@ -417,8 +422,6 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 		ELF64_P(phdr)[xseg].p_offset : /* << GCC 8 and higher */
 		ELF64_P(phdr)[xseg].p_filesz + 0xf & ~0xf; /* << GCC 7 and lower */
 
-	printf("COPY OFFSET %#lx\n", offp);
-
 	wehdr = memcpy(tmap, ehdr, offp);
 	wphdr = SELF64_E + tmap;
 
@@ -524,35 +527,33 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 	 * If we inserted on top, we must fix dynamic section 
 	 * otherwise ignore it, since offset has not changed.
 	 */
-	if (flag & 0x4) {
-		if (ELF64_E(wehdr)->e_type == ET_DYN) {
-			LF_SECTION(strcmp(ELF64_S(wshdr)[dx].sh_name + shstroff, ".dynamic") == 0,
-				{dyn = ELF64_S(wshdr)[dx].sh_offset + tmap; break ;});
-			if (0 == dyn) {
-				dprintf(STDERR_FILENO, "dynamic section is missing\n");
-				goto fail_l3;
-			}
-			for (;DT_NULL != ELF64_DYN(dyn)->d_tag; NEXT_HDR(dyn, SELF64_DYN)) {
-				switch (ELF64_DYN(dyn)->d_tag) {
-				case DT_PLTGOT:
-				case DT_FINI:
-				case DT_INIT:
-				case DT_FINI_ARRAY:
-				case DT_INIT_ARRAY:
-					ELF64_DYN(dyn)->d_un.d_ptr += added;
-				default: break ;
-				}
+	if ((flag & 0x4) &&
+	    ELF64_E(wehdr)->e_type == ET_DYN) {
+		LF_SECTION(strcmp(ELF64_S(wshdr)[dx].sh_name + shstroff, ".dynamic") == 0,
+			{dyn = ELF64_S(wshdr)[dx].sh_offset + tmap; break ;});
+		if (0 == dyn) {
+			dprintf(STDERR_FILENO, "dynamic section is missing\n");
+			goto fail_l3;
+		}
+		for (;DT_NULL != ELF64_DYN(dyn)->d_tag; NEXT_HDR(dyn, SELF64_DYN)) {
+			switch (ELF64_DYN(dyn)->d_tag) {
+			case DT_PLTGOT:
+			case DT_FINI:
+			case DT_INIT:
+			case DT_FINI_ARRAY:
+			case DT_INIT_ARRAY:
+				ELF64_DYN(dyn)->d_un.d_ptr += added;
+			default: break ;
 			}
 		}
-
+		/* checks the existennce of PLT */
 		if (0 == strcmp(".plt", shstroff + ELF64_S(wshdr)[xsec + 1].sh_name))
 			flag |= 0x1;
-		/* 
-		 * patching some section content
-		 */
+
+		/*  patching some section content */
 		for (int i = 0; i < ELF64_E(wehdr)->e_shnum; i++) {
 			if (ELF64_S(wshdr)[i].sh_type == SHT_RELA) {
-				if (ELF64_S(wshdr)[i].sh_offset == 0 ||
+				if (ELF64_S(wshdr)[i].sh_offset < SELF64_E ||
 				    ELF64_S(wshdr)[i].sh_entsize != SELF64_RELA)
 					continue ;
 
@@ -564,23 +565,22 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 					     ELF64_S(wshdr)[i].sh_entsize - 1;
 				     n > -1; n--) {
 					ELF64_RELA(rela)[n].r_offset += added;
-					if (flag & 0x4) {
-						switch (ELF64_R_TYPE(ELF64_RELA(rela)[n].r_info)) {
-						case R_X86_64_RELATIVE:
-						case R_X86_64_RELATIVE64:
-						case R_X86_64_IRELATIVE:
-							ELF64_RELA(rela)[n].r_addend += added;
-						default: break ;
-						}
+					switch (ELF64_R_TYPE(ELF64_RELA(rela)[n].r_info)) {
+					case R_X86_64_RELATIVE:
+					case R_X86_64_RELATIVE64:
+					case R_X86_64_IRELATIVE:
+						ELF64_RELA(rela)[n].r_addend += added;
+					default: break ;
 					}
 
-					/* got patch */
+					/* GOT patch */
 					if (flag & 0x2)
 						*((__UINT_LEAST64_TYPE__ *)
 						  (tmap + ELF64_RELA(rela)[n].r_offset -
 						   gdiff)) += added;
 				}
 			}
+			/* patch symbols */
 			if (ELF64_S(wshdr)[i].sh_type == SHT_DYNSYM ||
 			    ELF64_S(wshdr)[i].sh_type == SHT_SYMTAB) {
 				if (ELF64_S(wshdr)[i].sh_entsize != SELF64_ST)
@@ -632,18 +632,8 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 			- ELF64_P(wphdr)[xseg].p_vaddr;
 		/* patch entry point */
 		ELF64_E(wehdr)->e_entry = ELF64_P(wphdr)[xseg].p_filesz - added + ELF64_P(wphdr)[xseg].p_vaddr;
-		printf("__sec offset:%#lx align:%#lx\n", ELF64_S(wshdr)[xsec].sh_offset, align);
 		packer(tmap + ELF64_S(wshdr)[xsec].sh_offset + align, &0x70[_exec], xsz);
 	}
-
-	/* pack the .text by calling the object function */
-	printf("seg vaddr:%#lx\n", ELF64_P(wphdr)[xseg].p_vaddr);
-	printf("sec vaddr:%#lx\n", ELF64_S(wshdr)[xsec].sh_addr);
-
-	printf("%lu\n", added);
-	printf("packed :%lx bytes\n", xsz);
-	printf("jmp:%#lx\n", *((__INT_LEAST32_TYPE__ *)(&0x5a[_exec])));
-	printf("value:%lx\n", *((__UINT_LEAST64_TYPE__ *)(&0x2f[_exec])));
 
 	munmap(tmap, filsz);
 	close(tfd);
@@ -659,23 +649,63 @@ fail:
 	return -1;
 }
 
+#define DEFAULT_PAYLOAD_PATH "./aes_masm.o"
+
+#define DEFAULT_PAYLOAD_PSYM "aes128_enc"
+#define DEFAULT_PAYLOAD_USYM "aes128_dec"
+
+void
+wusage(void)
+{
+	dprintf(STDERR_FILENO, "usage: ./woodywood_packer [-dpe] binary\n"
+		"\t-d Specify a symbol name for the unpacker (default: "DEFAULT_PAYLOAD_USYM")\n"
+		"\t-e Specify a symbol name for the packer (default: "DEFAULT_PAYLOAD_PSYM")\n"
+		"\t-p Specify a path to a non stripped loadable object (default: "DEFAULT_PAYLOAD_PATH")\n");
+}
+
 int
 main(int ac, char **av)
 {
 	WFILE w;
 	WPAYLOAD pl;
+	char *pl_path = DEFAULT_PAYLOAD_PATH;
+	char *pl_psym = DEFAULT_PAYLOAD_PSYM;
+	char *pl_usym = DEFAULT_PAYLOAD_USYM;
+	static struct options_s opts[] = {
+		{"payload", req_arg, 0, 'p'},
+		{"usym", req_arg, 0, 'd'},
+		{"psym", req_arg, 0, 'e'},
+		{0, 0, 0, 0}
+	};
+	int  opt;
 
-	if (wopen(av[1], &w))
+	if (ac == 1) {
+		wusage();
+		goto fail;
+	}
+	while (-1 != (opt = ft_getopt_long(ac, av, "pde", opts))) {
+		switch (opt) {
+		case 'p':
+			pl_path = _optarg;
+			break ;
+		case 'd':
+			pl_usym = _optarg;
+			break ;
+		case 'e':
+			pl_psym = _optarg;
+			break ;
+		default :
+			wusage();
+			goto fail;
+		}
+	}
+
+	if (wopen(av[_optind], &w))
 		goto fail;
 
-#define DEFAULT_PAYLOAD_PATH      "./aes_masm.o"
-
-#define DEFAULT_PAYLOAD_PACKSYM   "aes128_enc"
-#define DEFAULT_PAYLOAD_UNPACKSYM "aes128_dec"
-
-	if (wopen_pl(DEFAULT_PAYLOAD_PATH, &pl,
-		     DEFAULT_PAYLOAD_PACKSYM,
-		     DEFAULT_PAYLOAD_UNPACKSYM))
+	if (wopen_pl(pl_path, &pl,
+		     pl_psym,
+		     pl_usym))
 		goto fail;
 	winject(&w, &pl);
 	return 0;
