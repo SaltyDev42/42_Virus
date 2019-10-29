@@ -22,7 +22,7 @@ $(STATIC_LIB):
 	make -C libft
 
 obj/%.o: src/%.c
-	mkdir -p $(shell dirname $@)
+	@mkdir -p $(shell dirname $@)
 	$(CC) $(CFLAGS) -c -o $@ $< -Ilibft -Isrc
 
 clean:
