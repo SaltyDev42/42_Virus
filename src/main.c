@@ -573,7 +573,8 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 					}
 
 					/* GOT patch */
-					if (flag & 0x2)
+					if (flag & 0x2 && 
+					    (ELF64_RELA(rela)[n].r_offset - gdiff) < filsz)
 						*((__UINT_LEAST64_TYPE__ *)
 						  (tmap + ELF64_RELA(rela)[n].r_offset -
 						   gdiff)) += added;
