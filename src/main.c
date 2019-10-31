@@ -303,25 +303,26 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 	void *ehdr, *phdr, *shdr;
 	void *wehdr, *wphdr, *wshdr;
 
-	void *st, *rela, *dyn = 0;
+	void *st, *rela;
+	void *dyn = 0;
 
 	Elf64_Sxword gdiff = -1;
 
 	char *shstroff;
 	size_t filsz, added;
-	size_t align = 0;
+	size_t align;
 	size_t offp, xsz = 0;
+	size_t offpa;
 	unsigned char *_exec;
 	int  tfd, rfd;
 #define HAS_PLT      (1 << 0)
 #define HAS_GOT      (1 << 1)
 #define HAS_OFFSET   (1 << 2)
-#define HAS_TROUVE_UN_NOM_2_MERDE (1 << 3)
 	int  flag = 0;
 	int  xseg = -1,
 	     xsec = -1,
 	     esec = -1;
-	
+
 	if (0 == wfil ||
 	    0 == wpfil)
 		goto fail;
@@ -366,13 +367,8 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 		goto fail_l2;
 	}
 	if ((flag & HAS_OFFSET) && ELF64_E(wfil->ehdr)->e_type == ET_EXEC) {
-#if 0
-		flag ^= HAS_OFFSET;
-		flag |= HAS_TROUVE_UN_NOM_2_MERDE;
-#else
 		dprintf(STDERR_FILENO, "static file with gcc version > 8.2.0 are unsupported\n");
 		goto fail_l2;
-#endif
 	}
 	/* get the necessary segments */
 #define LF_SECTION(condition, inst)					\
@@ -434,20 +430,25 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 		goto fail_l2;
 	}
 
+	/* 
+	 * section .init to end of section .text, 
+	 * source address should be aligned 
+	 */
 	if (ELF64_S(shdr)[xsec].sh_addr & 0xf) {
 		align = ELF64_S(shdr)[xsec].sh_addr & 0xf;
 	}
 
-
 	/* copy everything that's behind exec segment offset */
 	offp = flag & HAS_OFFSET ? ELF64_P(phdr)[xseg].p_offset : /* << GCC 8 and higher */
-		(ELF64_P(phdr)[xseg].p_filesz + 0xf) & ~0xf; /* << GCC 7 and lower */
+		ELF64_P(phdr)[xseg].p_filesz; /* << GCC 7 and lower */
 
 	wehdr = ft_memcpy(tmap, ehdr, offp);
 	wphdr = SELF64_E + tmap;
 
+	offpa = -offp & 0xf;
+	printf("offpa = %#lu\n", offpa);
 	/* injection start */
-	_exec = ft_memcpy(tmap + offp,
+	_exec = ft_memcpy(tmap + offp + offpa,
 		       /*0x0*/
 		       "\x57\x52\x50\x56"
 		       /* 0x4 sequence to copy in byte for header */
@@ -499,7 +500,7 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 	/* injection end */
 
 	/* copy the rest */
-	ft_memcpy(_exec + added,
+	ft_memcpy(_exec + added - offpa,
 	       wfil->map + offp,
 	       wfil->stat.st_size - offp);
 
@@ -512,9 +513,7 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 	 */
 	/* patch segment offset */
 	for (int i = xseg + 1; i < ELF64_E(wehdr)->e_phnum; i++) {
-		printf(" ELF64_P(wphdr)[i].p_offset  == %#lx \n offp == %#lx\n",
-		       ELF64_P(wphdr)[i].p_offset, offp);
-		if (ELF64_P(wphdr)[i].p_offset > ELF64_P(wphdr)[xseg].p_filesz - added) {
+		if (ELF64_P(wphdr)[i].p_offset > offp) {
 			ELF64_P(wphdr)[i].p_offset += added;
 			if (flag & HAS_OFFSET) {
 				ELF64_P(wphdr)[i].p_vaddr  += added;
@@ -621,6 +620,7 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 
 	/* size to unpack */
 	*((__UINT_LEAST64_TYPE__ *)(&0x2f[_exec])) = xsz;
+	offp += offpa;
 
 	/* patch entry point to our packer */
 	if (flag & HAS_OFFSET) {
