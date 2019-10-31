@@ -92,19 +92,19 @@ wopen(const char *victim, WFILE *buf)
 	}
 
 	if (0 > fstat(fdv, &new->stat)) {
-		dprintf(STDERR_FILENO, "fatal: could not stat %s\n", victim);
+		dprintf(STDERR_FILENO, "fatal: could not stat '%s'\n", victim);
 		goto fail_vmap;
 	}
 
 	_stat = &new->stat;
 	if ((__off_t)SELF64_E > _stat->st_size) {
-		dprintf(STDERR_FILENO, "unsupported file\n");
+		dprintf(STDERR_FILENO, "Unsupported file '%s'\n", victim);
 		goto fail_vmap;
 	}
 
 	mapv = WVMAP(fdv, _stat->st_size);
 	if (MAP_FAILED == mapv) {
-		dprintf(STDERR_FILENO, "fatal: mmap fail\n");
+		dprintf(STDERR_FILENO, "fatal: mmap fail '%s'\n", victim);
 		goto fail_vmap;
 	}
 
@@ -117,20 +117,20 @@ wopen(const char *victim, WFILE *buf)
 
 	if (0 == ident[EI_CLASS] ||
 	    3 <= ident[EI_CLASS]) {
-		dprintf(STDERR_FILENO, "Unsupported file\n");
+		dprintf(STDERR_FILENO, "Unsupported file '%s'\n", victim);
 		goto fail_corrupt;
 	}
 
 	/* This program only supports little endian */
 	if (ELFDATA2LSB != ident[EI_DATA]) {
-		dprintf(STDERR_FILENO, "Unsupported endianess\n");
+		dprintf(STDERR_FILENO, "Unsupported endianess '%s'\n", victim);
 		goto fail_corrupt;
 	}
 
 	/* checking if any segment is past size of file */
 
 	if (ident[EI_CLASS] != ELFCLASS64) {
-		dprintf(STDERR_FILENO, "Unsupported architecture");
+		dprintf(STDERR_FILENO, "Unsupported architecture '%s'\n", victim);
 		goto fail_corrupt;
 	}
 
@@ -313,6 +313,10 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 	size_t offp, xsz = 0;
 	unsigned char *_exec;
 	int  tfd, rfd;
+#define HAS_PLT      (1 << 0)
+#define HAS_GOT      (1 << 1)
+#define HAS_OFFSET   (1 << 2)
+#define HAS_TROUVE_UN_NOM_2_MERDE (1 << 3)
 	int  flag = 0;
 	int  xseg = -1,
 	     xsec = -1,
@@ -323,7 +327,6 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 		goto fail;
 
 #define WTARGET "woody"
-
 	tfd = open(WTARGET, O_TRUNC | O_CREAT | O_RDWR, wfil->stat.st_mode);
 	if (-1 == tfd) {
 		dprintf(STDERR_FILENO, "failed to open '%s'\n", WTARGET);
@@ -351,12 +354,25 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 	}
 
 	if (xseg == -1) {
-		dprintf(STDERR_FILENO, "Text or Data segment not found\n");
+		dprintf(STDERR_FILENO, "Executable segment not found\n");
 		goto fail_l2;
 	}
 
 	if (ELF64_P(phdr)[xseg].p_offset) {
-		flag |= 0x4;
+		flag |= HAS_OFFSET;
+	}
+	if (ELF64_E(wfil->ehdr)->e_ident[EI_OSABI] != ELFOSABI_SYSV) {
+		dprintf(STDERR_FILENO, "ABI other than SYSV is not supported\n");
+		goto fail_l2;
+	}
+	if ((flag & HAS_OFFSET) && ELF64_E(wfil->ehdr)->e_type == ET_EXEC) {
+#if 0
+		flag ^= HAS_OFFSET;
+		flag |= HAS_TROUVE_UN_NOM_2_MERDE;
+#else
+		dprintf(STDERR_FILENO, "static file with gcc version > 8.2.0 are unsupported\n");
+		goto fail_l2;
+#endif
 	}
 	/* get the necessary segments */
 #define LF_SECTION(condition, inst)					\
@@ -373,13 +389,13 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 	LF_SECTION(ft_strcmp(".got", ELF64_S(shdr)[dx].sh_name + shstroff) == 0,
 		{ gdiff = ELF64_S(shdr)[dx].sh_addr - ELF64_S(shdr)[dx].sh_offset;
 			break ;});
-	if (!(flag & 0x4))
+	if (!(flag & HAS_OFFSET))
 		LF_SECTION(ELF64_S(shdr)[dx].sh_offset + ELF64_S(shdr)[dx].sh_size == ELF64_P(phdr)[xseg].p_filesz,
 			{ esec = dx + 1; break ;});
 		
 	if (xsec == -1 ||
 	    gdiff == -1 ||
-	    (!(flag & 0x4) && esec == -1)) {
+	    (!(flag & HAS_OFFSET) && esec == -1)) {
 		dprintf(STDERR_FILENO, "Critical section header not found\n");
 		goto fail_l2;
 	}
@@ -399,16 +415,23 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 	added &= ~0xf;
 #endif
 
+	if (!(flag & HAS_OFFSET) &&
+	    (ELF64_P(phdr)[xseg+1].p_paddr - 
+	    (ELF64_P(phdr)[xseg].p_paddr + ELF64_P(phdr)[xseg].p_filesz)) < added) {
+		dprintf(STDERR_FILENO, "fatal: cannot append payload to executable segment\n");
+		goto fail_l2;
+	}
+
 	filsz += added;
 	if (ftruncate(tfd, filsz)) {
 		dprintf(STDERR_FILENO, "fatal ftruncate error\n");
-		goto fail;
+		goto fail_l2;
 	}
 
 	tmap = WWMAP(tfd, filsz);
 	if (MAP_FAILED == tmap) {
 		dprintf(STDERR_FILENO, "fatal: mmap error\n");
-		goto fail;
+		goto fail_l2;
 	}
 
 	if (ELF64_S(shdr)[xsec].sh_addr & 0xf) {
@@ -417,8 +440,7 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 
 
 	/* copy everything that's behind exec segment offset */
-	offp = flag & 0x4 ?
-		ELF64_P(phdr)[xseg].p_offset : /* << GCC 8 and higher */
+	offp = flag & HAS_OFFSET ? ELF64_P(phdr)[xseg].p_offset : /* << GCC 8 and higher */
 		(ELF64_P(phdr)[xseg].p_filesz + 0xf) & ~0xf; /* << GCC 7 and lower */
 
 	wehdr = ft_memcpy(tmap, ehdr, offp);
@@ -433,7 +455,7 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 		       /* 0xb */
 		       "\x48\x31\xff"
 		       "\x48\x31\xd2"
-		       "\x66\xba\x0b\x00"
+		       "\x66\xba\x0f\x00"
 		       "\x40\xb7\x01"
 		       "\x48\x31\xc0"
 		       "\xb0\x01"
@@ -460,9 +482,8 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 		       "\xe9\x26\x00\x00""\x00"
 		       /* 0x5e ____________ should jump over*/
 		       /*__WOOODY__ , 0xa 0 STRING*/
-		       "\x5f\x5f\x57\x4f\x4f\x44\x59\x5f"
-		       "\x5f\x0a\x00\x90\x90\x90\x90\x90"
-		       "\x90\x90" /* alignment for SSE */
+		       "....WOODY...."
+		       "\x0a\x00\x90\x90\x90" /* alignment for SSE */
 		       /* 0x70 */
 		       /* ... 16 random bytes */
 		       /* 0x80 */
@@ -476,9 +497,6 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 	       wpfil->wfile.map + wpfil->unpack_off,
 	       wpfil->unpack_sz);
 	/* injection end */
-
-	/* align size */
-	ELF64_P(wphdr)[xseg].p_filesz = (ELF64_P(wphdr)[xseg].p_filesz + 0xf) & ~0xf;
 
 	/* copy the rest */
 	ft_memcpy(_exec + added,
@@ -494,9 +512,11 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 	 */
 	/* patch segment offset */
 	for (int i = xseg + 1; i < ELF64_E(wehdr)->e_phnum; i++) {
-		if (ELF64_P(wphdr)[i].p_offset > ELF64_P(wphdr)[xseg].p_offset) {
+		printf(" ELF64_P(wphdr)[i].p_offset  == %#lx \n offp == %#lx\n",
+		       ELF64_P(wphdr)[i].p_offset, offp);
+		if (ELF64_P(wphdr)[i].p_offset > ELF64_P(wphdr)[xseg].p_filesz - added) {
 			ELF64_P(wphdr)[i].p_offset += added;
-			if (flag & 0x4) {
+			if (flag & HAS_OFFSET) {
 				ELF64_P(wphdr)[i].p_vaddr  += added;
 				ELF64_P(wphdr)[i].p_paddr  += added;
 			}
@@ -514,7 +534,7 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 		(x).sh_offset += added;		\
 	} while(0);
 
-	if (flag & 0x4) {
+	if (flag & HAS_OFFSET) {
 		for (int i = xsec; i < ELF64_E(wehdr)->e_shnum; i++)
 			FIX_SECT_OFFSET(ELF64_S(wshdr)[i]);
 	} else {
@@ -526,7 +546,7 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 	 * If we inserted on top, we must fix dynamic section 
 	 * otherwise ignore it, since offset has not changed.
 	 */
-	if ((flag & 0x4) &&
+	if ((flag & HAS_OFFSET) &&
 	    ELF64_E(wehdr)->e_type == ET_DYN) {
 		LF_SECTION(ft_strcmp(ELF64_S(wshdr)[dx].sh_name + shstroff, ".dynamic") == 0,
 			{dyn = ELF64_S(wshdr)[dx].sh_offset + tmap; break ;});
@@ -547,7 +567,7 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 		}
 		/* checks the existennce of PLT */
 		if (0 == ft_strcmp(".plt", shstroff + ELF64_S(wshdr)[xsec + 1].sh_name))
-			flag |= 0x1;
+			flag |= HAS_PLT;
 
 		/*  patching some section content */
 		for (int i = 0; i < ELF64_E(wehdr)->e_shnum; i++) {
@@ -557,8 +577,8 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 					continue ;
 
 				rela = ELF64_S(wshdr)[i].sh_offset + tmap;
-				if ((flag & 0x1) && ft_strcmp(".rela.plt", shstroff + ELF64_S(wshdr)[i].sh_name))
-					flag |= 0x2;
+				if ((flag & HAS_PLT) && ft_strcmp(".rela.plt", shstroff + ELF64_S(wshdr)[i].sh_name))
+					flag |= HAS_GOT;
 
 				for (int n = ELF64_S(wshdr)[i].sh_size /
 					     ELF64_S(wshdr)[i].sh_entsize - 1;
@@ -573,7 +593,7 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 					}
 
 					/* GOT patch */
-					if (flag & 0x2 && 
+					if (flag & HAS_GOT && 
 					    (ELF64_RELA(rela)[n].r_offset - gdiff) < filsz)
 						*((__UINT_LEAST64_TYPE__ *)
 						  (tmap + ELF64_RELA(rela)[n].r_offset -
@@ -603,7 +623,7 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 	*((__UINT_LEAST64_TYPE__ *)(&0x2f[_exec])) = xsz;
 
 	/* patch entry point to our packer */
-	if (flag & 0x4) {
+	if (flag & HAS_OFFSET) {
 		/* packer is at topside of the map */
 		/* offset to the real section .text */
 		*((__INT_LEAST32_TYPE__ *)(&0x22[_exec])) = added - 0x26;
@@ -622,16 +642,22 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 	} else {
 		/* packer is at the bottomside of the map */
 		/* offset to the real section .text */
-		*((__INT_LEAST32_TYPE__ *)(&0x22[_exec])) = -offp + ELF64_S(wshdr)[xsec].sh_addr - 0x26 + align - ELF64_P(wphdr)[xseg].p_vaddr;
+		*((__INT_LEAST32_TYPE__ *)(&0x22[_exec])) =
+			-offp + ELF64_S(wshdr)[xsec].sh_addr - 0x26 +
+			align - ELF64_P(wphdr)[xseg].p_vaddr;
 		/* point to the start of the segment */
-		*((__INT_LEAST32_TYPE__ *)(&0x3f[_exec])) = -offp - 0x43;
+		*((__INT_LEAST32_TYPE__ *)(&0x3f[_exec])) =
+			-offp - 0x43;
 		/* segment size for mprotect */
-		*((__UINT_LEAST64_TYPE__ *)(&0x45[_exec])) = ELF64_P(wphdr)[xseg].p_memsz;
+		*((__UINT_LEAST64_TYPE__ *)(&0x45[_exec])) =
+			ELF64_P(wphdr)[xseg].p_memsz;
 		/* patch the jmp so it goes to _start@.text*/
-		*((__INT_LEAST32_TYPE__ *)(&0x5a[_exec])) = -offp + ELF64_E(wehdr)->e_entry - 0x5e
+		*((__INT_LEAST32_TYPE__ *)(&0x5a[_exec])) =
+			-offp + ELF64_E(wehdr)->e_entry - 0x5e
 			- ELF64_P(wphdr)[xseg].p_vaddr;
 		/* patch entry point */
-		ELF64_E(wehdr)->e_entry = ELF64_P(wphdr)[xseg].p_filesz - added + ELF64_P(wphdr)[xseg].p_vaddr;
+		ELF64_E(wehdr)->e_entry =
+			offp + ELF64_P(wphdr)[xseg].p_vaddr;
 		packer(tmap + ELF64_S(wshdr)[xsec].sh_offset + align, &0x70[_exec], xsz);
 	}
 

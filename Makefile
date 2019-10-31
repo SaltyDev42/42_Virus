@@ -5,17 +5,17 @@ SOURCE = main.c ft_getopt_long.c
 OBJECT = $(patsubst %.c, obj/%.o, $(SOURCE))
 PACKER = aes_masm.s
 
-STATIC_LIB = libft.a
+STATIC_LIB = libft/libft.a
 
 NAME = woodywood_packer
 
-all: $(NAME) $(PACKER:.s=.o)
+all: $(NAME)
 
 
 $(NAME): $(OBJECT) $(STATIC_LIB) $(PACKER:.s=.o)
 	$(CC) $(OBJECT) -Llibft -lft -Ilibft -o $(NAME)
 
-$(PACKER:.s=.o):
+$(PACKER:.s=.o): $(PACKER)
 	$(CC) -c $(PACKER)
 
 $(STATIC_LIB):
