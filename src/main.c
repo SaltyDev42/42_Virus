@@ -310,7 +310,7 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 
 	char *shstroff;
 	size_t filsz, added;
-	size_t align;
+	size_t align = 0;
 	size_t offp, xsz = 0;
 	size_t offpa;
 	unsigned char *_exec;
