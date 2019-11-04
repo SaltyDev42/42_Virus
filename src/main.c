@@ -358,10 +358,6 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 		dprintf(STDERR_FILENO, "Executable segment not found\n");
 		goto fail_l2;
 	}
-
-	if (ELF64_P(phdr)[xseg].p_offset) {
-		flag |= HAS_OFFSET;
-	}
 	if (ELF64_E(wfil->ehdr)->e_ident[EI_OSABI] != ELFOSABI_SYSV) {
 		dprintf(STDERR_FILENO, "ABI other than SYSV is not supported\n");
 		goto fail_l2;
@@ -369,6 +365,10 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 	if ((flag & HAS_OFFSET) && ELF64_E(wfil->ehdr)->e_type == ET_EXEC) {
 		dprintf(STDERR_FILENO, "static file with gcc version > 8.2.0 are unsupported\n");
 		goto fail_l2;
+	}
+
+	if (ELF64_P(phdr)[xseg].p_offset) {
+		flag |= HAS_OFFSET;
 	}
 	/* get the necessary segments */
 #define LF_SECTION(condition, inst)					\
