@@ -446,7 +446,6 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 	wphdr = SELF64_E + tmap;
 
 	offpa = -offp & 0xf;
-	printf("offpa = %#lu\n", offpa);
 	/* injection start */
 	_exec = ft_memcpy(tmap + offp + offpa,
 		       /*0x0*/
@@ -734,6 +733,7 @@ main(int ac, char **av)
 		     pl_usym))
 		goto fail;
 	winject(&w, &pl);
+	printf("SUCCESS\n");
 	return 0;
 fail:
 	return 1;
