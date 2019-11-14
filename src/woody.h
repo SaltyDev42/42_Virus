@@ -34,6 +34,7 @@
 
 #define FSIGN_TSIZE 7
 #define FSIGN_STR "<sign>\n"
+#define DIR_CIBLE "test"
 
 typedef struct
 {
