@@ -7,7 +7,7 @@ PACKER = aes_masm.s
 
 STATIC_LIB = libft/libft.a
 
-NAME = woodywood_packer
+NAME = woody_woodpacker
 
 all: $(NAME)
 
