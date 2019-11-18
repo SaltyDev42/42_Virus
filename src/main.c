@@ -85,54 +85,46 @@ wopen(const char *victim, WFILE *buf)
 	if (0 == buf)
 		goto fail_open;
 
-	fdv = open(victim, O_RDONLY);
-	if (0 > fdv) {
-		dprintf(STDERR_FILENO, "fatal: failed to open '%s'\n", victim);
-		goto fail_open;
+
+#define WOPEN_ASSERT(expr, jmp, fmt, ...)			\
+	if (expr) {						\
+		dprintf(STDERR_FILENO, fmt, __VA_ARGS__);	\
+		goto jmp;					\
 	}
 
-	if (0 > fstat(fdv, &new->stat)) {
-		dprintf(STDERR_FILENO, "fatal: could not stat '%s'\n", victim);
-		goto fail_vmap;
-	}
+	fdv = open(victim, O_RDONLY);
+	WOPEN_ASSERT(0 > fdv, fail_open,
+		     "fatal: failed to open '%s'\n", victim);
+	WOPEN_ASSERT(0 > fstat(fdv, &new->stat), fail_vmap,
+		     "fatal: could not stat '%s'\n", victim);
 
 	_stat = &new->stat;
-	if ((__off_t)SELF64_E > _stat->st_size) {
-		dprintf(STDERR_FILENO, "Unsupported file '%s'\n", victim);
-		goto fail_vmap;
-	}
+	WOPEN_ASSERT((__off_t)SELF64_E > _stat->st_size, fail_vmap,
+		     "Unsupported file '%s'\n", victim);
 
 	mapv = WVMAP(fdv, _stat->st_size);
-	if (MAP_FAILED == mapv) {
-		dprintf(STDERR_FILENO, "fatal: mmap fail '%s'\n", victim);
-		goto fail_vmap;
-	}
+	WOPEN_ASSERT(MAP_FAILED == mapv, fail_vmap,
+		     "fatal: mmap fail '%s'\n", victim);
 
 	ident = mapv;
-	/* GOD FORBIDS */
-	if (0 != ft_memcmp(ident, ELFMAG, SELFMAG)) {
-		dprintf(STDERR_FILENO, "'%s' is not an elf\n", victim);
-		goto fail_corrupt;
-	}
+	WOPEN_ASSERT(0 != ft_memcmp(ident, ELFMAG, SELFMAG), fail_corrupt,
+		     "'%s' is not an elf\n", victim);
 
-	if (0 == ident[EI_CLASS] ||
-	    3 <= ident[EI_CLASS]) {
-		dprintf(STDERR_FILENO, "Unsupported file '%s'\n", victim);
-		goto fail_corrupt;
-	}
+	WOPEN_ASSERT(ELFCLASSNONE == ident[EI_CLASS] || ELFCLASSNUM <= ident[EI_CLASS],
+		     fail_corrupt,
+		     "Unsupported file '%s'\n", victim);
 
 	/* This program only supports little endian */
-	if (ELFDATA2LSB != ident[EI_DATA]) {
-		dprintf(STDERR_FILENO, "Unsupported endianess '%s'\n", victim);
-		goto fail_corrupt;
-	}
+	WOPEN_ASSERT(ELFDATA2LSB != ident[EI_DATA],
+		     fail_corrupt,
+		     "Unsupported endianess '%s'\n", victim);
 
 	/* checking if any segment is past size of file */
 
-	if (ident[EI_CLASS] != ELFCLASS64) {
-		dprintf(STDERR_FILENO, "Unsupported architecture '%s'\n", victim);
-		goto fail_corrupt;
-	}
+	WOPEN_ASSERT(ident[EI_CLASS] != ELFCLASS64,
+		     fail_corrupt,
+		     "Unsupported architecture '%s'\n", victim);
+#undef WOPEN_ASSERT
 
 	WELF_CHECK(ELF64, mapv,
 		   (long unsigned int)_stat->st_size, /*filesize*/
@@ -412,6 +404,8 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 	}
 
 	filsz += added;
+	/* trigger copy on write */
+	ELF64_E(ehdr)->e_type = ELF64_E(ehdr)->e_type;
 	if (ftruncate(tfd, filsz)) {
 		dprintf(STDERR_FILENO, "fatal ftruncate error\n");
 		goto fail_l2;
@@ -592,7 +586,7 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 			    ELF64_S(wshdr)[i].sh_entsize == SELF64_RELA) {
 
 				rela = ELF64_S(wshdr)[i].sh_offset + tmap;
-				if (ft_strcmp(".rela.plt", shstroff + ELF64_S(wshdr)[i].sh_name))
+				if (0 == ft_strcmp(".rela.plt", shstroff + ELF64_S(wshdr)[i].sh_name))
 					flag |= HAS_GOT;
 
 				FIX_RELA_SECTION(flag, rela, gdiff,
