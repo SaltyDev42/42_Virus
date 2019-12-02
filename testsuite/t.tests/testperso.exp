@@ -1,0 +1,42 @@
+
+set timeout 3
+
+set namebin "bin perso"
+
+set testdata {
+	{"test"}
+	{"print"}
+	{"static"}
+}
+
+set flagcase { ""
+	"-O3"
+	"--static"
+}
+
+set SORTTEST "testsuite/bin/testwp.sh"
+foreach flag $flagcase {
+	foreach pattern $testdata {
+		eval "spawn $SORTTEST [lindex $pattern 0] $flag"
+		expect {
+			"Segmentation fault" {
+				fail "$namebin : [lindex $pattern 0].c : Segmentation fault (flag : $flag)"
+			}
+			"packer : fail" {
+				fail "$namebin : [lindex $pattern 0].c : packer (flag : $flag)"
+			}
+			"woody : fail" {
+				fail "$namebin : [lindex $pattern 0].c : woody (flag : $flag)"
+			}
+			"exec : fail" {
+				fail "$namebin : [lindex $pattern 0].c : exec (flag : $flag)"
+			}
+			timeout {
+				fail "$namebin : [lindex $pattern 0].c : timeout (flag : $flag)"
+			}
+			default {
+				pass [lindex $pattern 0]
+			}
+		}		
+	}
+}

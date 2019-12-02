@@ -1,0 +1,35 @@
+
+set timeout 3
+
+set namebin "bin system"
+
+set testdata {
+	{"/bin/ls"}
+	{"/bin/lscpu"}
+	{"/bin/ldconfig"}
+}
+
+set SORTTEST "testsuite/bin/testwb.sh"
+foreach pattern $testdata {
+	eval "spawn $SORTTEST [lindex $pattern 0]"
+	expect {
+		"Segmentation fault" {
+			fail "$namebin : [lindex $pattern 0] : Segmentation fault"
+		}
+		"packer : fail" {
+			fail "$namebin : [lindex $pattern 0] : packer"
+		}
+		"woody : fail" {
+			fail "$namebin : [lindex $pattern 0] : woody"
+		}
+		"exec : fail" {
+			fail "$namebin : [lindex $pattern 0] : exec"
+		}
+		timeout {
+			fail "$namebin : [lindex $pattern 0] : timeout"
+		}
+		default {
+			pass [lindex $pattern 0]
+		}
+	}
+}
