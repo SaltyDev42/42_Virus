@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -Wall -Wextra
+CFLAGS = -Wall -Wextra -g3
 
 SOURCE = main.c ft_getopt_long.c
 OBJECT = $(patsubst %.c, obj/%.o, $(SOURCE))
@@ -35,7 +35,7 @@ fclean: clean
 
 re: fclean all
 
-test:
-	runtest --srcdir testsuite
+test: all
+	@runtest --all --srcdir testsuite
 
 .PHONY: all clean fclean re test

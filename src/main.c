@@ -1,5 +1,6 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/file.h>
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -71,6 +72,12 @@
 
 #define NEXT_HDR(hdr, s)           (hdr) = (((char *)(hdr)) + (s))
 
+#define WASSERT(expr, jmp, ...)				\
+	if (expr) {					\
+		dprintf(STDERR_FILENO, __VA_ARGS__);	\
+		goto jmp;				\
+	}
+
 int
 wopen(const char *victim, WFILE *buf)
 {
@@ -86,45 +93,38 @@ wopen(const char *victim, WFILE *buf)
 		goto fail_open;
 
 
-#define WOPEN_ASSERT(expr, jmp, fmt, ...)			\
-	if (expr) {						\
-		dprintf(STDERR_FILENO, fmt, __VA_ARGS__);	\
-		goto jmp;					\
-	}
-
 	fdv = open(victim, O_RDONLY);
-	WOPEN_ASSERT(0 > fdv, fail_open,
+	WASSERT(0 > fdv, fail_open,
 		     "fatal: failed to open '%s'\n", victim);
-	WOPEN_ASSERT(0 > fstat(fdv, &new->stat), fail_vmap,
+	WASSERT(0 > fstat(fdv, &new->stat), fail_vmap,
 		     "fatal: could not stat '%s'\n", victim);
 
 	_stat = &new->stat;
-	WOPEN_ASSERT((__off_t)SELF64_E > _stat->st_size, fail_vmap,
+	WASSERT((__off_t)SELF64_E > _stat->st_size, fail_vmap,
 		     "Unsupported file '%s'\n", victim);
 
 	mapv = WVMAP(fdv, _stat->st_size);
-	WOPEN_ASSERT(MAP_FAILED == mapv, fail_vmap,
+	WASSERT(MAP_FAILED == mapv, fail_vmap,
 		     "fatal: mmap fail '%s'\n", victim);
 
 	ident = mapv;
-	WOPEN_ASSERT(0 != ft_memcmp(ident, ELFMAG, SELFMAG), fail_corrupt,
+	WASSERT(0 != ft_memcmp(ident, ELFMAG, SELFMAG), fail_corrupt,
 		     "'%s' is not an elf\n", victim);
 
-	WOPEN_ASSERT(ELFCLASSNONE == ident[EI_CLASS] || ELFCLASSNUM <= ident[EI_CLASS],
+	WASSERT(ELFCLASSNONE == ident[EI_CLASS] || ELFCLASSNUM <= ident[EI_CLASS],
 		     fail_corrupt,
 		     "Unsupported file '%s'\n", victim);
 
 	/* This program only supports little endian */
-	WOPEN_ASSERT(ELFDATA2LSB != ident[EI_DATA],
+	WASSERT(ELFDATA2LSB != ident[EI_DATA],
 		     fail_corrupt,
 		     "Unsupported endianess '%s'\n", victim);
 
 	/* checking if any segment is past size of file */
 
-	WOPEN_ASSERT(ident[EI_CLASS] != ELFCLASS64,
+	WASSERT(ident[EI_CLASS] != ELFCLASS64,
 		     fail_corrupt,
 		     "Unsupported architecture '%s'\n", victim);
-#undef WOPEN_ASSERT
 
 	WELF_CHECK(ELF64, mapv,
 		   (long unsigned int)_stat->st_size, /*filesize*/
@@ -219,24 +219,20 @@ wopen_pl(const char *pl_path, WPAYLOAD *pl,
 				toffset = ELF##_S(shndr)->sh_offset;	\
 		}							\
 									\
-		if (0 == symtab) {					\
-			dprintf(STDERR_FILENO, "elf section symtab not"	\
-				" found in payload '%s'\n",		\
-				pl_path);				\
-			goto fail;					\
-		}							\
-		if (0 == strtab) {					\
-			dprintf(STDERR_FILENO, "elf section strtab not"	\
-				" found in payload '%s'\n",		\
-				pl_path);				\
-			goto fail;					\
-		}							\
-		if (0 == toffset) {					\
-			dprintf(STDERR_FILENO, "elf section text not"	\
-				" found in payload '%s'\n",		\
-				pl_path);				\
-			goto fail;					\
-		}							\
+		WASSERT(0 == symtab,					\
+			fail,						\
+			"elf section symtab not found in payload '%s'\n", \
+			pl_path);					\
+									\
+		WASSERT(0 == strtab,					\
+			fail,						\
+			"elf section strtab not found in payload '%s'\n", \
+			pl_path);					\
+									\
+		WASSERT(0 == toffset,					\
+			fail,						\
+			"elf section text not found in payload '%s'\n",	\
+			pl_path);					\
 									\
 		for (Elf64_Xword i = symtabn;				\
 		     i ||  0 == stpack || 0 == stupack;			\
@@ -250,35 +246,29 @@ wopen_pl(const char *pl_path, WPAYLOAD *pl,
 				stupack = symtab;			\
 		}							\
 									\
-		if (0 == stpack ||					\
-		    0 == stupack) {					\
-			dprintf(STDERR_FILENO,				\
+		WASSERT(0 == stpack || 0 == stupack,			\
+			fail,						\
 				"could not find symbol '%s'"		\
 				" in payload '%s' symtab\n",		\
 				!stpack ? packsym : unpacksym,		\
-				pl_path);				\
-			goto fail;					\
-		}							\
+			pl_path);					\
 									\
 		pl->pack_off = ELF##_ST(stpack)->st_value + toffset;	\
 		pl->unpack_off = ELF##_ST(stupack)->st_value + toffset;	\
 		pl->pack_sz = ELF##_ST(stpack)->st_size;		\
 		pl->unpack_sz = ELF##_ST(stupack)->st_size;		\
-		if (0 == pl->unpack_sz) {				\
-			dprintf(STDERR_FILENO, "Symbol '%s' has size "	\
-				"0\n", unpacksym);			\
-			goto fail;					\
-		}							\
+		WASSERT(0 == pl->unpack_sz,				\
+			fail,						\
+			"Symbol '%s' has size 0\n", unpacksym);		\
 	} while(0);
 
 	PL_GETPACKER(ELF64);
 
-	if (mprotect(wfile->map,
-		     pl->wfile.stat.st_size,
-		     PROT_READ | PROT_EXEC)) {
-		dprintf(STDERR_FILENO, "fatal: mprotect error\n");
-		goto fail;
-	}
+	WASSERT(mprotect(wfile->map,
+			 pl->wfile.stat.st_size,
+			 PROT_READ | PROT_EXEC),
+		fail,
+		"fatal: mprotect error\n");
 	return 0;
 
 fail:
@@ -292,8 +282,11 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 {
 	void (*packer)(void *, void *, size_t) = wpfil->wfile.map + wpfil->pack_off;
 	void *tmap;
-	void *ehdr, *phdr, *shdr;
+	void *ehdr = wfil->ehdr,
+		*phdr = wfil->phdr,
+		*shdr = wfil->shdr;
 	void *wehdr, *wphdr, *wshdr;
+	void *wpayload_ptr;
 
 	void *st, *rela;
 	void *dyn = 0;
@@ -319,8 +312,11 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 		goto fail;
 
 #define WTARGET "woody"
-	tfd = open(WTARGET, O_TRUNC | O_CREAT | O_RDWR, wfil->stat.st_mode);
-	if (-1 == tfd) {
+	/* triggers copy on write on all page allocated */
+	read(wfil->fd, wfil->map, wfil->stat.st_size);
+	/* ^^ worst hack */
+	tfd = open(WTARGET, O_CREAT | O_RDWR, wfil->stat.st_mode);
+	if (0 > tfd) {
 		dprintf(STDERR_FILENO, "failed to open '%s'\n", WTARGET);
 		goto fail;
 	}
@@ -330,10 +326,6 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 		dprintf(STDERR_FILENO, "failed to generate key\n");
 		goto fail_l1;
 	}
-
-	ehdr = wfil->ehdr;
-	phdr = wfil->phdr;
-	shdr = wfil->shdr;
 
 	/* assumes that program header is ascending order by vaddr */
 	for (int i = 0; i < ELF64_E(ehdr)->e_phnum; i++) {
@@ -404,8 +396,6 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 	}
 
 	filsz += added;
-	/* trigger copy on write */
-	ELF64_E(ehdr)->e_type = ELF64_E(ehdr)->e_type;
 	if (ftruncate(tfd, filsz)) {
 		dprintf(STDERR_FILENO, "fatal ftruncate error\n");
 		goto fail_l2;
@@ -435,7 +425,19 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 
 	offpa = -offp & 0xf;
 
-	_exec = ft_memcpy(tmap + offp + offpa,
+	wpayload_ptr = tmap + offp + offpa;
+	/* copy the rest */
+	ft_memcpy(wpayload_ptr + added - offpa,
+	       wfil->map + offp,
+	       wfil->stat.st_size - offp);
+
+	/* copy the unpacker */
+	ft_memcpy(wpayload_ptr + WPACKER_TSIZE,
+	       wpfil->wfile.map + wpfil->unpack_off,
+	       wpfil->unpack_sz);
+
+
+	_exec = ft_memcpy(wpayload_ptr,
 		       /*0x0*/
 		       "\x57\x52\x50\x56"
 		       /* 0x4 sequence to copy in byte for header */
@@ -479,16 +481,6 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 
 	/* urandom key */
 	read(rfd, &0x70[_exec], 16);
-
-	/* copy the unpacker */
-	ft_memcpy(_exec + 0x80,
-	       wpfil->wfile.map + wpfil->unpack_off,
-	       wpfil->unpack_sz);
-
-	/* copy the rest */
-	ft_memcpy(_exec + added - offpa,
-	       wfil->map + offp,
-	       wfil->stat.st_size - offp);
 	/* injection end */
 
 	/* patch start */
