@@ -1,0 +1,4 @@
+[submodule "libfts"]
+	path = libfts
+	url = git@github.com:asterix-e42/libfts.git
+	branch = linux
