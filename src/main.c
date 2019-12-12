@@ -345,11 +345,12 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 	if (ELF64_P(phdr)[xseg].p_offset) {
 		flag |= HAS_OFFSET;
 	}
-
+#if 0
 	if ((flag & HAS_OFFSET) && ELF64_E(wfil->ehdr)->e_type == ET_EXEC) {
 		dprintf(STDERR_FILENO, "static file with gcc version > 8.2.0 are unsupported\n");
 		goto fail_l2;
 	}
+#endif
 
 	/* get the necessary segments */
 #define LF_SECTION(condition, inst)					\
@@ -438,46 +439,48 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 
 
 	_exec = ft_memcpy(wpayload_ptr,
-		       /*0x0*/
-		       "\x57\x52\x50\x56"
-		       /* 0x4 sequence to copy in byte for header */
-		       "\x48\x8d\x35\x53""\x00\x00\x00"
-		       /* 0xb */
-		       "\x48\x31\xff"
-		       "\x48\x31\xd2"
-		       "\x66\xba\x0f\x00"
-		       "\x40\xb7\x01"
-		       "\x48\x31\xc0"
-		       "\xb0\x01"
-		       /* --------------- ---------- */
-		       /* 0x1d syscall */
-		       "\x0f\x05"
-		       /* 0x1f  (0x1e load .text rel) // to do dyn */
-		       "\x48\x8d\x3d\x42""\x00\x00\x00"
-		       /* 0x26 load key address rip rel addr // ok */
-		       "\x48\x8d\x35\x43""\x00\x00\x00"
-		       /* 0x2d mov rdx, size // to do dyn */
-		       "\x48\xba""\x00\x00\x00\x00""\x00\x00\x00\x00"
-		       /* 0x37 packer call // ok */
-		       "\xe8\x44\x00\x00""\x00"
-		       /* 0x3c lea rsi, rip - 0x43 (_init sym) // to do dyn */
-		       "\x48\x8d\x3d\x00""\xff\xff\xff"
-		       /* 0x43 mov rsi, PLACE HOLDER // dyn */
-		       "\x48\xbe""\x00\x00\x00\x00""\x00\x00\x00\x00"
-		       /* 0x4d */
-		       "\x31\xd2\xb2\x05""\xb0\x0a\x90\x90" //  \x0f\x05"
-		       /* 0x55 restore register */
-		       "\x5e\x58\x5a\x5f"
-		       /* 0x59 jmp near rel addr + 0x26 // dyn jump unpack */
-		       "\xe9\x26\x00\x00""\x00"
-		       /* 0x5e ____________ should jump over*/
-		       /*__WOOODY__ , 0xa 0 STRING*/
-		       "....WOODY...."
-		       "\x0a\x00\x90\x90\x90" /* alignment for SSE */
-		       /* 0x70 */
-		       /* ... 16 random bytes */
-		       /* 0x80 */
-		       , 0x70);
+			  /*0x0*/
+			  "\x57\x52\x50\x56"
+			  /* 0x4 sequence to copy in byte for header */
+			  "\x48\x8d\x35\x53""\x00\x00\x00"
+			  /* 0xb */
+			  "\x48\x31\xff"
+			  "\x48\x31\xd2"
+			  "\x66\xba\x0f\x00"
+			  "\x40\xb7\x01"
+			  "\x48\x31\xc0"
+			  "\xb0\x01"
+			  /* --------------- ---------- */
+			  /* 0x1d syscall */
+			  "\x0f\x05"
+			  /* 0x1f  (0x1e load .text rel) // to do dyn */
+			  "\x48\x8d\x3d\x42""\x00\x00\x00"
+			  /* 0x26 load key address rip rel addr // ok */
+			  "\x48\x8d\x35\x43""\x00\x00\x00"
+			  /* 0x2d mov rdx, size // to do dyn */
+			  "\x48\xba""\x00\x00\x00\x00""\x00\x00\x00\x00"
+			  /* 0x37 packer call // ok */
+			  "\x90\x90\x90\x90\x90"
+/*		       "\xe8\x44\x00\x00""\x00"
+ */
+			  /* 0x3c lea rsi, rip - 0x43 (_init sym) // to do dyn */
+			  "\x48\x8d\x3d\x00""\xff\xff\xff"
+			  /* 0x43 mov rsi, PLACE HOLDER // dyn */
+			  "\x48\xbe""\x00\x00\x00\x00""\x00\x00\x00\x00"
+			  /* 0x4d */
+			  "\x31\xd2\xb2\x05""\xb0\x0a\x90\x90" //  \x0f\x05"
+			  /* 0x55 restore register */
+			  "\x5e\x58\x5a\x5f"
+			  /* 0x59 jmp near rel addr + 0x26 // dyn jump unpack */
+			  "\xe9\x26\x00\x00""\x00"
+			  /* 0x5e ____________ should jump over*/
+			  /*__WOOODY__ , 0xa 0 STRING*/
+			  "....WOODY...."
+			  "\x0a\x00\x90\x90\x90" /* alignment for SSE */
+			  /* 0x70 */
+			  /* ... 16 random bytes */
+			  /* 0x80 */
+			  , 0x70);
 
 	/* urandom key */
 	read(rfd, &0x70[_exec], 16);
@@ -550,16 +553,13 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 			FIX_GOT_ENTRY(tmap, ELF64_RELA(relap)[n].r_offset - (va_diff)); \
 	}
 
-	/* patching dynamics, ignore if static or GCC 7 and lower */
-	if ((flag & HAS_OFFSET) &&
-	    ELF64_E(wehdr)->e_type == ET_DYN) {
+	/* patching dynamics, ignore if GCC < 8.2.0 */
+	if (flag & HAS_OFFSET) {
 		LF_SECTION(ft_strcmp(ELF64_S(wshdr)[dx].sh_name + shstroff, ".dynamic") == 0,
 			{dyn = ELF64_S(wshdr)[dx].sh_offset + tmap; break ;});
 
-		if (0 == dyn) {
-			dprintf(STDERR_FILENO, "dynamic section is missing\n");
-			goto fail_l3;
-		}
+		if (0 == dyn)
+			goto skip_dyn;
 		for (;DT_NULL != ELF64_DYN(dyn)->d_tag; NEXT_HDR(dyn, SELF64_DYN)) {
 			switch (ELF64_DYN(dyn)->d_tag) {
 			case DT_PLTGOT:
@@ -571,6 +571,7 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 			default: break ;
 			}
 		}
+	skip_dyn:
 		/*  patching some section content */
 		for (int i = 0; i < ELF64_E(wehdr)->e_shnum; i++) {
 			if (ELF64_S(wshdr)[i].sh_type == SHT_RELA &&
@@ -610,7 +611,7 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 	/* size to unpack */
 	*((__UINT_LEAST64_TYPE__ *)(&0x2f[_exec])) = xsz;
 	offp += offpa;
-
+	printf("xsz = %lx\n", xsz);
 	/* patch entry point to our packer */
 	if (flag & HAS_OFFSET) {
 		/* packer is at topside of the map */
@@ -627,7 +628,7 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 
 		/* patch entry point */
 		ELF64_E(wehdr)->e_entry = ELF64_P(wphdr)[xseg].p_vaddr;
-		packer(_exec + added, &0x70[_exec], xsz);
+//		packer(_exec + added, &0x70[_exec], xsz);
 	} else {
 		/* packer is at the bottomside of the map */
 		/* offset to the real section .text */
@@ -647,9 +648,14 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 		/* patch entry point */
 		ELF64_E(wehdr)->e_entry =
 			offp + ELF64_P(wphdr)[xseg].p_vaddr;
+		/* 
+		 * tmap = origin
+		 * + section sh_offset
+		 * + align offset if unaligned because SSE instruction
+		 */
 		packer(tmap + ELF64_S(wshdr)[xsec].sh_offset + align, &0x70[_exec], xsz);
 	}
-	/*patch end :: 503*/
+	/*patch end :: line 503*/
 	munmap(tmap, filsz);
 	close(tfd);
 	close(rfd);
