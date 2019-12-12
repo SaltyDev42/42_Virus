@@ -32,7 +32,8 @@
 # define SELF64_RELA sizeof(Elf64_Rela)
 # define SELF64_DYN  sizeof(Elf64_Dyn)
 
-# define WPACKER_TSIZE 0x80
+# define WSTUB_SIZE    0x50
+# define WWRAPPER_SIZE 0x80
 
 typedef struct
 {
@@ -46,6 +47,7 @@ typedef struct
 	void *ehdr;
 	void *phdr;
 	void *shdr;
+	void *shstrp;
 } WFILE;
 
 typedef struct
