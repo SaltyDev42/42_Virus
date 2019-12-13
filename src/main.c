@@ -8,7 +8,6 @@
 
 #include <stdio.h>
 #include <stdint.h>
-
 #include "libft.h"
 #include "woody.h"
 #include "ft_getopt_long.h"
@@ -151,7 +150,7 @@ wopen(const char *victim, WFILE *buf)
 	new->ehdr = mapv;
 	new->phdr = phdr;
 	new->shdr = shdr;
-	new->shstrp = ELF64_S(shdr)[ELF64_E(ehdr)->e_shstrndx].sh_offset + mapv;
+	new->shstrp = ELF64_S(shdr)[ELF64_E(mapv)->e_shstrndx].sh_offset + mapv;
 
 	return 0;
 
@@ -295,7 +294,7 @@ _seed_packer(void *buf, size_t size)
 	ret = read(rfd, buf, size);
 	close(rfd);
 fail:
-	return -(0 => ret);
+	return -(0 >= ret);
 }
 
 static int
@@ -306,7 +305,8 @@ _inject_stub(void *ehdr, void *phx, void *bss, size_t plsz)
 	__UINT_LEAST64_TYPE__
 		vaddr_entry = ELF64_E(ehdr)->e_entry,
 		vaddr_patched = ELF64_P(phx)->p_vaddr + ELF64_P(phx)->p_filesz,
-		vaddr_bss = ELF64_P(bss)->sh_addr;
+		/* we may need bss ?? */
+		vaddr_bss = ELF64_S(bss)->sh_addr;
 
 	if (ELF64_P(phx)->p_filesz != ELF64_P(phx)->p_memsz)
 		goto fail;
@@ -346,12 +346,12 @@ _inject_stub(void *ehdr, void *phx, void *bss, size_t plsz)
 	*((__INT_LEAST32_TYPE__ *)(stubp + BSS_OFFSET)) =
 		vaddr_bss - vaddr_patched - 0x1a;
 	*((__INT_LEAST32_TYPE__ *)(stubp + BSZ_OFFSET)) =
-		plsz + 0xfff & ~0xfff;
+		(plsz + 0xfff) & ~0xfff;
 	*((__INT_LEAST32_TYPE__ *)(stubp + JMP_OFFSET)) =
-		-(vaddr_patched - vaddr_entry)- 0x4f;
+		-(vaddr_patched - vaddr_entry) - 0x4f;
 
-	ELF64P(phx)->p_filesz += WSTUB_SIZE;
-	ELF64P(phx)->p_memsz  += WSTUB_SIZE;
+	ELF64_P(phx)->p_filesz += WSTUB_SIZE;
+	ELF64_P(phx)->p_memsz  += WSTUB_SIZE;
 	return 0;
 #undef BSS_OFFSET
 #undef BSZ_OFFSET
@@ -360,49 +360,126 @@ fail:
 	return -1;
 }
 
-static int
-_inject_payload(void *map, void *phx, void *phd, void *bss,
-		WPAYLOAD const *wpfil)
+static size_t
+_inject_payload(void *map, void *phd, void *bss,
+		void *init, WPAYLOAD const *wpfil)
 {
+	void    (*packer)(void *, void *, size_t) = wpfil->wfile.map + wpfil->pack_off,
+		*root;
+	size_t	packsz = wpfil->unpack_sz + WWRAPPER_SIZE,
+		data_memsz  = ELF64_P(phd)->p_memsz,
+		data_filesz = ELF64_P(phd)->p_filesz,
+		text_filesz = 0,
+		toadd = 0;
+
 	__UINT_LEAST64_TYPE__
-		text_vaddr,
-		bss_vaddr;
+		text_vaddr = ELF64_S(init)->sh_addr,
+		text_off   = ELF64_S(init)->sh_offset,
+		phd_vaddr  = ELF64_P(phd)->p_vaddr + data_filesz,
+		phd_off    = ELF64_P(phd)->p_offset + data_filesz,
+		bss_vaddr  = ELF64_S(bss)->sh_addr;
 
-	ft_memcpy
-		"\x48\x8d\x35\x53\x00\x00\x00"
-		"\x48\x31\xff"
-		"\x48\x31\xd2"
-		"\x66\xba\x0b\x00"
-		"\x40\xb7\x01"
-		"\x48\x31\xc0"
-		"\xb0\x01"
-		"\x0f\x05"
-		"\x48\x8d\x3d\xde\xff\xff\xff"
-		"\xbe\x44\x33\x22\x11"
-		"\x31\xd2"
-		"\xb2\x07"
-		"\xb0\x0a"
-		"\x48\x8d\x3d\x41\x00\x00\x00"
-		"\x48\x8d\x35\x2a\x00\x00\x00"
-		"\xba\x44\x33\x22\x11"
-		"\xe8\x15\x00\x00\x00"
-		"\x48\x8d\x3d\xb4\xff\xff\xff"
-		"\xbe\x44\x33\x22\x11"
-		"\x31\xd2"
-		"\xb2\x05"
-		"\xb0\x0a"
-		"\x0f\x05"
-		"\xc3"
-	/*5a*/
-		"\x5f\x5f\x57\x4f\x4f\x44\x59\x5f\x5f"
+	int	phd_align  = bss_vaddr - phd_vaddr,
+		text_align = -text_off & ~0xf;
 
+
+	/* grow phd mem size if space is lower than required */
+	packsz += phd_align;
+	if (data_memsz - data_filesz < packsz) {
+		toadd = packsz - (data_memsz - data_filesz);
+		data_memsz += toadd;
+	}
+	data_filesz += packsz;
+	phd_off += phd_align;
+
+#define KEYSIZE 0x10
+	root = map + phd_off;
+	ft_memcpy(root,
+		  "\x48\x8d\x35\x53\x00\x00\x00" /* << string */
+		  "\x48\x31\xff"
+		  "\x48\x31\xd2"
+		  "\x66\xba\x0c\x00"
+		  "\x40\xb7\x01"
+		  "\x48\x31\xc0"
+		  "\xb0\x01"
+		  "\x0f\x05"                     /* << write syscall */
+		  "\x48\x8d\x3d\xde\xff\xff\xff" /* << efffective address with rip rel */
+		  /*            ^^^ 0x1e       */
+		  "\xbe\x44\x33\x22\x11"         /* << size */
+		  /*    ^^^ 0x23      */
+		  "\x31\xd2"
+		  "\xb2\x07"
+		  "\xb0\x0a"
+		  "\x48\x8d\x3d\x41\x00\x00\x00"
+		  "\x48\x8d\x35\x2a\x00\x00\x00"
+		  "\xba\x44\x33\x22\x11"
+		  "\xe8\x15\x00\x00\x00"
+		  "\x48\x8d\x3d\xb4\xff\xff\xff"
+		  /*            ^^^ 0x48   */
+		  "\xbe\x44\x33\x22\x11"
+		  /*    ^^^ 0x4d      */
+		  "\x31\xd2"
+		  "\xb2\x05"
+		  "\xb0\x0a"
+		  "\x0f\x05"
+		  "\xc3"
+		  /*END OF OPCODE*/
+	/*5a*/	  "\x2e\x2e\x2e\x57\x4f\x4f\x44\x59\x2e\x2e\x2e\x0a"
+		  /*...WOODY...n*/
+	/*6c*/	  "\x90\x90\x90\x90",
+		  /*ALIGN OPCODE FOR KEY*/
+		  /*70*/
+		  WWRAPPER_SIZE - KEYSIZE);
+
+	_seed_packer(root + (WWRAPPER_SIZE - KEYSIZE), KEYSIZE);
+
+	ft_memcpy(root + WWRAPPER_SIZE,
+		  wpfil->wfile.map + wpfil->unpack_off,
+		  wpfil->unpack_sz);
+
+#define MAX_SECTION 4
+	/* Count how many section we need to pack, packing 4 maximum*/
+	for (int i = 0; (ELF64_S(init)[i].sh_flags & SHF_EXECINSTR) && i < MAX_SECTION; i++) {
+		text_filesz += ELF64_S(init)[i].sh_size;
+	}
+
+	text_filesz -= text_align;
+	text_filesz &= ~0xf;
+
+	/* obfuscate the 4 executable section using AES-128 
+	   (replaceable with any other type of symmetric encryption) 
+	   object must be compiled with gcc, nasm does not provide enough
+	   info to extract the unpacker */
+	packer(map + text_off + text_align,
+	       root + WWRAPPER_SIZE,
+	       text_filesz);
+#define TEXT1_OFFSET 0x1e
+#define SIZE1_OFFSET 0x23
+#define TEXT2_OFFSET 0x48
+#define SIZE2_OFFSET 0x4d
+	/* patching the payload address */
+	
+	*((__INT_LEAST32_TYPE__ *)(root + TEXT1_OFFSET)) =
+		-(text_vaddr - bss_vaddr) - 0x22;
+	*((__UINT_LEAST32_TYPE__ *)(root + SIZE1_OFFSET)) =
+		text_filesz;
+	*((__INT_LEAST32_TYPE__ *)(root + TEXT2_OFFSET)) =
+		-(text_vaddr - bss_vaddr) - 0x4c;
+	*((__UINT_LEAST32_TYPE__ *)(root + SIZE1_OFFSET)) =
+		text_filesz;
+
+#undef KEYSIZE
+#undef TEXT1_OFFSET
+#undef SIZE1_OFFSET
+#undef TEXT2_OFFSET
+#undef SIZE2_OFFSET
+	return packsz;
 }
 
 
 int
-winject(WFILE const *wfil, WPAYLOAD const *wpfil, const void *key)
+winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 {
-	void    (*packer)(void *, void *, size_t) = wpfil->wfile.map + wpfil->pack_off;
 	void    *ehdr = wfil->ehdr,
 	        *phdr = wfil->phdr,
 	        *shdr = wfil->shdr,
@@ -411,10 +488,11 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil, const void *key)
 		*wmap;
 	size_t  filsz,
 		added,
-		offp, voff;
+		offp;
 	int     phx_dx = -1,
 	        phd_dx = -1,
 		shx_dx = -1,
+		bss_dx = -1,
 		wfd,
 		i;
 
@@ -430,8 +508,8 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil, const void *key)
 	 */
 	read(wfil->fd, wfil->map, wfil->stat.st_size);
 	/* ^^ worst hack */
-	tfd = open(WTARGET, O_CREAT | O_RDWR, wfil->stat.st_mode);
-	WASSERT(0 > tfd,
+	wfd = open(WTARGET, O_CREAT | O_RDWR, wfil->stat.st_mode);
+	WASSERT(0 > wfd,
 		fail,
 		"failed to open '%s'\n", WTARGET);
 #undef WTARGET
@@ -451,13 +529,23 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil, const void *key)
 	}
 	/* get section init */
 	for (i = 0; i < ELF64_E(ehdr)->e_shnum; i++) {
-		if (0 == ft_strcmp(ELF64_S(shdr)[i].sh_name + shstrp, ".bss"))
+		if (0 == ft_strcmp(ELF64_S(shdr)[i].sh_name + shstrp, ".init")) {
+			shx_dx = i;
+			break ;
+		}
+	}
+	/* get section bss */
+	for (; i < ELF64_E(ehdr)->e_shnum; i++) {
+		if (0 == ft_strcmp(ELF64_S(shdr)[i].sh_name + shstrp, ".bss")) {
 			bss_dx = i;
+			break;
+		}
 	}
 
 	WASSERT(shx_dx == -1
 		|| phd_dx == -1
-		|| phx_dx == -1,
+		|| phx_dx == -1
+		|| bss_dx == -1,
 		fail_l1,
 		"Executable program header or .init or .bss not found\n");
 	/* checking requirement for injection */
@@ -470,23 +558,42 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil, const void *key)
 
 	added = wpfil->unpack_sz;
 	added += WWRAPPER_SIZE;
-	added += 0x1f;
-	added &= ~0xf;
+	/* There is an offset between the start of the .bss and the end of the .data
+	   and it varies from 0x8 ~ 0x18 */
+	added += ELF64_S(shdr)[bss_dx].sh_addr
+		- ELF64_P(phdr)[phd_dx].p_vaddr
+		- ELF64_P(phdr)[phd_dx].p_filesz;
 
-	WASSERT(-1 == ftruncate(wfd, wfil->stat.st_size + added),
+	filsz = wfil->stat.st_size + added;
+
+	WASSERT(-1 == ftruncate(wfd, filsz),
 		fail_l1,
 		"Fatal, Could not truncate file\n");
 
-	wmap = WWMAP(wfd, wfil->stat.st_size + added);
+	wmap = WWMAP(wfd, filsz);
 	WASSERT(MAP_FAILED == wmap,
 		fail_l1,
 		"Fatal, mmap error\n");
 
 	offp = ELF64_P(phdr)[phd_dx].p_offset + ELF64_P(phdr)[phd_dx].p_filesz;
-	ft_memcpy(wmap, wfil->tmap, offp);
+	
+	ft_memcpy(wmap, wfil->map, offp);
 
-	_inject_stub();
-	_inject_payload();
+	WASSERT(-1 == _inject_stub(ehdr,
+				   &ELF64_P(phdr)[phx_dx],
+				   &ELF64_S(shdr)[bss_dx],
+				   added),
+		fail_l2,
+		"Program Header memsz and filesz does not match");
+
+	WASSERT(added != _inject_payload(wmap,
+					 &ELF64_P(phdr)[phd_dx],
+					 &ELF64_S(phdr)[bss_dx],
+					 &ELF64_S(shdr)[shx_dx],
+					 wpfil),
+		fail_l2,
+		"smthsmth happened, probably bad");
+	
 
 	/* patching time */
 	wehdr;
@@ -500,7 +607,7 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil, const void *key)
 fail_l2:
 	munmap(wmap, filsz);
 fail_l1:
-	close(tfd);
+	close(wfd);
 fail:
 	return -1;
 }
