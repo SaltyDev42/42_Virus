@@ -15,20 +15,16 @@ section .text
 default rel
 stub:
 ;; context saving
-	push rdi
 	push rdx
 	push rax
-	push rsi
 ;; resets register
-	xor rdi, rdi
 	xor edx, edx
-	xor rsi, rsi
-	xor rax, rax
 
 ;; saving space
 	sub rsp, 0x10
 ;;mprotect
-	lea rdi, [_REL]				 ; address
+	lea r8,  [_REL]				 ; address jump
+	lea rdi, [_REL]				 ; aligned address mapping
 	mov [rsp + 0x8], rdi			 ; save rel
 	mov DWORD [rsp], PLACEHOLDER		 ; save size
 	mov esi, [rsp]				 ; payload size
@@ -36,11 +32,12 @@ stub:
 	mov al, __NR_mprotect
 	syscall
 
-	call [rsp + 0x8]		; real function
+	call r8					; real function
 
 ;; reset bss
-	mov rdi, [rsp + 0x8]
-	mov ecx, [rsp]
+	mov rdi, r8
+	mov ecx, eax
+	xor eax, eax
 	rep stosq
 ;;mprotect removes exection on bss
 	pop rsi			;size
@@ -49,10 +46,8 @@ stub:
 	mov al, __NR_mprotect
 	syscall
 ;; context restoring
-	pop rsi
 	pop rax
 	pop rdx
-	pop rdi
 	jmp 1
 ;; PLACEHOLDER for bss
 _REL:

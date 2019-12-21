@@ -32,33 +32,73 @@
 # define SELF64_RELA sizeof(Elf64_Rela)
 # define SELF64_DYN  sizeof(Elf64_Dyn)
 
-# define WSTUB_SIZE    0x50
+# define WSTUB_SIZE    0x48
 # define WWRAPPER_SIZE 0x80
 
 typedef struct
 {
-	const char *name;
+	char	*name;
 
-	int fd;
-	void *map;
+	void	*map,
+		*ehdr,
+		*phdr,
+		*shdr,
+		*shstrp;
+
 	struct stat stat;
-
-	unsigned char *ident;
-	void *ehdr;
-	void *phdr;
-	void *shdr;
-	void *shstrp;
+	int	fd;
 } WFILE;
 
 typedef struct
 {
-	WFILE wfile;
-	Elf64_Off pack_off;
-	Elf64_Xword pack_sz;
+	WFILE	*wfile;
+#define _vmap    wfile->map
+#define _vehdr   wfile->ehdr
+#define _vphdr   wfile->phdr
+#define _vshdr   wfile->shdr
+#define _vshstrp wfile->shstrp
+	void	*wmap;
 
-	Elf64_Off unpack_off;
-	Elf64_Xword unpack_sz;
+	__UINT_LEAST64_TYPE__
+		phd_fix,
+		added,
+		entry,
+		upac_filesz,
+		upac_align;
+
+	__INT_LEAST32_TYPE__
+		*stub_bss,
+		*stub_dat,
+		*stub_dsz,
+		*stub_jmp;
+
+	__INT_LEAST32_TYPE__
+		*pload_phx[2],
+		*pload_pxs[2],
+		*pload_txt,
+		*pload_txs;
+
+#define NDX(x) x##_ndx
+	int	NDX(phd),
+		NDX(phx),
+		NDX(txt),
+		NDX(bss),
+		NDX(shx);
+
+	int	phd_align;
+} WVICTIM;
+
+typedef struct
+{
+	WFILE		wfile;
+
+	Elf64_Off	pack_off;
+	Elf64_Xword	pack_sz;
+
+	Elf64_Off	unpack_off;
+	Elf64_Xword	unpack_sz;
 
 } WPAYLOAD;
 
+#undef NDX
 #endif
