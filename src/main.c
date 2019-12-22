@@ -402,6 +402,7 @@ _inject_payload(WVICTIM *v, WPAYLOAD const *wpfil)
 
 #define KEYSIZE 0x10
 	root = v->wmap + phd_off;
+	printf("phd_off = %#lx\n", phd_off);
 	ft_memcpy(root,
 		  "\x48\x8d\x35\x5a\x00\x00\x00" /* << string */
 		  "\x48\x31\xff"
@@ -546,7 +547,9 @@ _patch_binary(WVICTIM *v)
 		memsz_phx     ,
 		vaddr_data    = ELF64_P(wphdr)[phd_ndx].p_vaddr,
 		memsz_data    = ELF64_P(wphdr)[phd_ndx].p_memsz,
-		vaddr_bss     = ELF64_S(wshdr)[bss_ndx].sh_addr,
+		vaddr_payload = vaddr_data
+		+ ELF64_P(wphdr)[phd_ndx].p_filesz
+		+ v->phd_align,
 		vaddr_text    = ELF64_S(wshdr)[txt_ndx].sh_addr;
 
 
@@ -575,19 +578,51 @@ _patch_binary(WVICTIM *v)
 	/* mprotect rdi + rsi */
 	*v->stub_dat = (vaddr_data & ~0xfff) - vaddr_patched - 0xf;
 	*v->stub_dsz = memsz_data + align;
-	/* rel $rip call to our packer  (lea r8, [$rip + ???]) */
-	*v->stub_bss = vaddr_bss - vaddr_patched - 0x16;
+	/* rel $rip call to our packer (lea r8, [$rip + ???]) */
+	*v->stub_bss = vaddr_payload - vaddr_patched - 0x16;
 	/* virtual address of _start */
 	*v->stub_jmp = vaddr_entry - vaddr_patched - 0x47;
 
 	/*payload*/
-	*v->pload_phx[0] = vaddr_phx - vaddr_bss - 0x22;
+	*v->pload_phx[0] = vaddr_phx - vaddr_payload - 0x22;
 	*v->pload_pxs[0] = memsz_phx;
-	*v->pload_phx[1] = vaddr_phx - vaddr_bss - 0x4e;
+	*v->pload_phx[1] = vaddr_phx - vaddr_payload - 0x4e;
 	*v->pload_pxs[1] = memsz_phx;
-	*v->pload_txt    = vaddr_text - vaddr_bss - 0x36 + text_align;
+	*v->pload_txt    = vaddr_text - vaddr_payload - 0x36 + text_align;
 	*v->pload_txs    = text_filesz;
 }
+
+static int
+_safe_bss_inject(
+	void *map,
+	void *dynsym,
+	void *bss,
+	__UINT_LEAST64_TYPE__ __top_phd_vaddr)
+{
+	__UINT_LEAST64_TYPE__
+		_topmost_safe_bss = ELF64_S(bss)->sh_addr,
+		st_value;
+	void	*dynsym_p = map + ELF64_S(dynsym)->sh_offset;
+
+	printf("_topmost_safe_bss: %#lx\n", _topmost_safe_bss);
+	if (ELF64_S(dynsym)->sh_type != SHT_DYNSYM ||
+	    ELF64_S(dynsym)->sh_entsize != SELF64_ST)
+		goto result;
+	for (int n = 0, max = ELF64_S(dynsym)->sh_size / SELF64_ST;
+	     n < max;
+	     n++) {
+		st_value = ELF64_ST(dynsym_p)[n].st_value
+			+ ELF64_ST(dynsym_p)[n].st_size;
+		/* align it to 2^16, since size can be random*/
+		st_value += -st_value & 0xf;
+		if (st_value > _topmost_safe_bss)
+			_topmost_safe_bss = st_value;
+	}
+result:
+	printf("_topmost_safe_bss: %#lx\n", _topmost_safe_bss);
+	return _topmost_safe_bss - __top_phd_vaddr;
+}
+
 
 int
 winject(WFILE const *wfil, WPAYLOAD const *wpfil)
@@ -608,6 +643,7 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 	        phd_dx = -1,
 		shx_dx = -1,
 		bss_dx = -1,
+		dyn_dx = 0,
 		phd_align,
 		wfd,
 		i;
@@ -644,6 +680,15 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 			break ;
 		}
 	}
+
+	/* we can't know when there will be a dynsym */
+	for (i = 0; i < ELF64_E(ehdr)->e_shnum; i++) {
+		if (0 == ft_strcmp( ELF64_S(shdr)[i].sh_name + shstrp, ".dynsym")) {
+			dyn_dx = i;
+			break ;
+		}
+	}
+
 	/* get section init */
 	for (i = 0; i < ELF64_E(ehdr)->e_shnum; i++) {
 		if (0 == ft_strcmp(ELF64_S(shdr)[i].sh_name + shstrp, ".init")) {
@@ -672,21 +717,22 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 		fail_l1,
 		"Segment executable cannot append stub, aborting\n");
 
+	phd_vaddr     = ELF64_P(phdr)[phd_dx].p_vaddr
+		+ ELF64_P(phdr)[phd_dx].p_filesz;
+	/* bss is not right after data, there is some padding */
+	phd_align     = _safe_bss_inject(wfil->map,
+					 &ELF64_S(shdr)[dyn_dx],
+					 &ELF64_S(shdr)[bss_dx],
+					 phd_vaddr);
+
 	victim.added  = wpfil->unpack_sz;
 	victim.added += WWRAPPER_SIZE;
 	/* There is an offset between the start of the .bss and the end of the .data
 	   and it varies from 0x8 ~ 0x18 */
-	victim.added += ELF64_S(shdr)[bss_dx].sh_addr
-		- ELF64_P(phdr)[phd_dx].p_vaddr
-		- ELF64_P(phdr)[phd_dx].p_filesz;
+	victim.added += phd_align;
 	victim.added += 0xf;
 	victim.added &= ~0xf;
 
-	phd_vaddr     = ELF64_P(phdr)[phd_dx].p_vaddr
-		+ ELF64_P(phdr)[phd_dx].p_filesz;
-	/* bss is not right after data, there is some padding */
-	phd_align     = ELF64_S(shdr)[bss_dx].sh_addr - phd_vaddr;
-	victim.added += phd_align;
 	victim.phd_align = phd_align;
 
 	filesz = wfil->stat.st_size + victim.added;

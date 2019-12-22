@@ -63,6 +63,7 @@ typedef struct
 		phd_fix,
 		added,
 		entry,
+		vaddr_payload,
 		upac_filesz,
 		upac_align;
 
