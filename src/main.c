@@ -569,7 +569,10 @@ _patch_binary(WVICTIM *v)
 
 	ELF64_P(wphdr)[phx_ndx].p_filesz += WSTUB_SIZE;
 	ELF64_P(wphdr)[phx_ndx].p_memsz  += WSTUB_SIZE;
-	ELF64_S(wshdr)[txt_ndx].sh_size  += WSTUB_SIZE;
+	/* patching the text section is only relevant if we could inject it
+	   before the rodata */
+	if (ELF64_P(wphdr)[phx_ndx+1].p_flags == PF_R)
+		ELF64_S(wshdr)[txt_ndx].sh_size  += WSTUB_SIZE;
 
 	memsz_phx = ELF64_P(wphdr)[phx_ndx].p_filesz;
 
@@ -633,7 +636,6 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 		*shstrp = wfil->shstrp,
 		*wmap;
 
-	
 	__UINT_LEAST64_TYPE__
 		phd_vaddr,
 		filesz,
@@ -668,7 +670,8 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 #undef WTARGET
 	/* get executable segments */
 	for (i = 0; i < ELF64_E(ehdr)->e_phnum; i++) {
-		if (ELF64_P(phdr)[i].p_flags & PF_X) {
+		if ((ELF64_P(phdr)[i].p_flags & PF_X) &&
+		    ELF64_P(phdr)[i].p_type == PT_LOAD) {
 			phx_dx = i;
 			break ;
 		}
