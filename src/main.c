@@ -611,6 +611,8 @@ _safe_bss_inject(
 	if (ELF64_S(dynsym)->sh_type != SHT_DYNSYM ||
 	    ELF64_S(dynsym)->sh_entsize != SELF64_ST)
 		goto result;
+	/* bss top address can be unaligned, align it to 16 */
+	_topmost_safe_bss += -_topmost_safe_bss & 0xf;
 	for (int n = 0, max = ELF64_S(dynsym)->sh_size / SELF64_ST;
 	     n < max;
 	     n++) {
@@ -795,7 +797,7 @@ fail:
 void
 wusage(void)
 {
-	dprintf(STDERR_FILENO, "usage: ./woodywood_packer [-dpe] binary\n"
+	dprintf(STDERR_FILENO, "usage: ./woody_woodpacker [-dpe] binary\n"
 		"\t-d Specify a symbol name for the unpacker (default: "DEFAULT_PAYLOAD_USYM")\n"
 		"\t-e Specify a symbol name for the packer (default: "DEFAULT_PAYLOAD_PSYM")\n"
 		"\t-p Specify a path to a non stripped loadable object (default: "DEFAULT_PAYLOAD_PATH")\n");
