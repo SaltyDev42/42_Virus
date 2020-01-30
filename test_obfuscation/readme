@@ -1,0 +1,1 @@
+gcc -S main_test.c -o m1.s && bash test.sh m1.s > m2.s && gcc m2.s
