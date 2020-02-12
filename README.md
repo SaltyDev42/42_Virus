@@ -16,6 +16,8 @@ The stub has 4 job:
 
 The step 4 is necessary because the payload will be injected into the BSS and most binary expect it to be zeroed.
 
+Then the second step which consist to inject the payload into the BSS section. In this program, the payload will just decrypt the binary so it runs normally without problems. \
+Why the BSS? Because it does not hold any critical information  and the elf doesn't really care if BSS comes from file or is allocated on runtime.
 
 The following diagram shows where injection happens: \
 GCC version > 8.2.0
