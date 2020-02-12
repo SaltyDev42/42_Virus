@@ -72,7 +72,7 @@ Test are also included.
 ```
 ./woody_woodpacker [-p payload path] [-d decrypt symbol name] [-e encrypt symbol name] binary
 ```
-NOTE: the payload should be a binary, and compiled with gcc with the option -c
+NOTE: the payload should be a binary, and compiled with `gcc` with the option `-c`
 
 ## Credits
 To my friend gaulish who made the payload AES128 using instruction AES-NI extension.
