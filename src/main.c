@@ -8,7 +8,6 @@
 
 #include <stdio.h>
 #include <stdint.h>
-
 #include "libft.h"
 #include "woody.h"
 #include "ft_getopt_long.h"
@@ -72,9 +71,9 @@
 
 #define NEXT_HDR(hdr, s)           (hdr) = (((char *)(hdr)) + (s))
 
-#define WASSERT(expr, jmp, ...)				\
+#define WASSERT(expr, jmp, fmt, ...)			\
 	if (expr) {					\
-		dprintf(STDERR_FILENO, __VA_ARGS__);	\
+		dprintf(STDERR_FILENO, fmt __VA_OPT__(,) __VA_ARGS__);	\
 		goto jmp;				\
 	}
 
@@ -143,14 +142,14 @@ wopen(const char *victim, WFILE *buf)
 		WELF_PCHECK(ELF64_P, nphdr, (long unsigned int)_stat->st_size, fail_corrupt);
 	}
 
-	new->name = victim;
+	new->name = (char *)victim;
 	new->fd = fdv;
 	new->map = mapv;
-	new->ident = ident;
 
 	new->ehdr = mapv;
 	new->phdr = phdr;
 	new->shdr = shdr;
+	new->shstrp = ELF64_S(shdr)[ELF64_E(mapv)->e_shstrndx].sh_offset + mapv;
 
 	return 0;
 
@@ -277,389 +276,515 @@ fail_wopen:
 	return -1;
 }
 
+static int
+_seed_packer(void *buf, size_t size)
+{
+	int rfd;
+	int ret = -1;
+
+	rfd = open("/dev/urandom", O_RDONLY);
+	/* fallback if urandom is not available or missing */
+	if (0 > rfd)
+		rfd = open("/dev/random", O_RDONLY);
+
+	WASSERT(0 > rfd,
+		fail,
+		"Failed to generate a key\n");
+	ret = read(rfd, buf, size);
+	close(rfd);
+fail:
+	return -(0 >= ret);
+}
+
+static int
+_inject_stub(WVICTIM *v)
+{
+	void	*phdr = v->_vphdr;
+
+	void	*phx  = &ELF64_P(phdr)[v->phx_ndx],
+		*stubp = v->wmap
+			+ ELF64_P(phx)->p_offset
+			+ ELF64_P(phx)->p_filesz;
+
+	__UINT_LEAST64_TYPE__
+		vaddr_patched = ELF64_P(phx)->p_vaddr + ELF64_P(phx)->p_filesz;
+
+	if (ELF64_P(phx)->p_filesz != ELF64_P(phx)->p_memsz)
+		goto fail;
+	ft_memcpy(stubp,
+		  "\x52\x50"
+		  "\x31\xd2"
+		  "\x48\x83\xec\x10"
+	/*8*/	  "\x48\x8d\x3d\x35\x00\x00\x00"
+		  /*            ^^^ 0xb*/
+	/*f*/	  "\x4c\x8d\x05\x00\x00\x00\x00"
+		  /*            ^^^ 0x12*/
+	/*16*/	  "\x48\x89\x7c\x24\x08"
+	/*1b*/	  "\xc7\x04\x24\x00\x00\x00\x00"
+		  /*            ^^^ 0x1e*/
+		  "\x8b\x34\x24"
+		  "\xb2\x07"
+		  "\xb0\x0a"
+		  "\x0f\x05"
+		  "\x41\xff\xd0"
+
+		  "\x4c\x89\xc7"
+		  "\x89\xc1"
+		  "\x31\xc0"
+		  "\xf3\x48\xab"
+
+		  "\x5e\x5f"
+		  "\xb2\x03"
+		  "\xb0\x0a"
+		  "\x0f\x05"
+		  "\x58\x5a"
+	/*42*/	  "\xe9\xfd\xff\xff\xff"
+		  /*    ^^^ 0x43*/
+	/*4d*/	  "\x90",
+		  WSTUB_SIZE);
+#define DAT_OFFSET 0xb
+#define BSS_OFFSET 0x12
+#define DSZ_OFFSET 0x1e
+#define JMP_OFFSET 0x43
+
+	/* setting pointers for patching */
+	v->stub_bss = stubp + BSS_OFFSET;
+	v->stub_dat = stubp + DAT_OFFSET;
+	v->stub_dsz = stubp + DSZ_OFFSET;
+	v->stub_jmp = stubp + JMP_OFFSET;
+	/* setting values for patching */
+	v->entry    = vaddr_patched;
+
+	return 0;
+#undef BSS_OFFSET
+#undef DAT_OFFSET
+#undef DSZ_OFFSET
+#undef JMP_OFFSET
+fail:
+	return -1;
+}
+
+static ssize_t
+_inject_payload(WVICTIM *v, WPAYLOAD const *wpfil)
+{
+	void    (*packer)(void *, void *, size_t)
+		= wpfil->wfile.map + wpfil->pack_off;
+
+	/* using the original mapping, 
+	   we don't patch headers here, only injecting payload */
+	void	*vphdr	= v->_vphdr,
+		*vshdr	= v->_vshdr;
+
+	void	*phd	= &ELF64_P(vphdr)[v->phd_ndx],
+		*init	= &ELF64_S(vshdr)[v->shx_ndx],
+		*root;
+
+	size_t	packsz = v->added,
+		data_memsz  = ELF64_P(phd)->p_memsz,
+		data_filesz = ELF64_P(phd)->p_filesz,
+		text_filesz = 0,
+		toadd = 0;
+
+	__UINT_LEAST64_TYPE__
+		phd_off    = ELF64_P(phd)->p_offset + data_filesz,
+		text_off;
+
+	int	text_align,
+		i;
+
+	/* grow phd mem size if space is lower than required */
+	if (data_memsz - data_filesz < packsz)
+		toadd = packsz - (data_memsz - data_filesz);
+
+	v->phd_fix   = toadd;
+
+	phd_off     += v->phd_align;
+
+#define KEYSIZE 0x10
+	root = v->wmap + phd_off;
+	printf("phd_off = %#lx\n", phd_off);
+	ft_memcpy(root,
+		  "\x48\x8d\x35\x5a\x00\x00\x00" /* << string */
+		  "\x48\x31\xff"
+		  "\x48\x31\xd2"
+		  "\x66\xba\x0c\x00"
+		  "\x40\xb7\x01"
+		  "\x48\x31\xc0"
+		  "\xb0\x01"
+		  "\x0f\x05"                     /* << write syscall */
+
+		  "\x48\x8d\x3d\xde\xff\xff\xff" /* << efffective address with rip rel */
+		  /*            ^^^ 0x1e       */
+		  "\xbe\x44\x33\x22\x11"         /* << size */
+		  /*    ^^^ 0x23      */
+		  "\x31\xd2"
+		  "\xb2\x07"
+		  "\xb0\x0a"
+		  "\x0f\x05"
+		  "\x48\x8d\x3d\x41\x00\x00\x00"
+		  /*             ^^^ 0x32 */
+		  "\x48\x8d\x35\x33\x00\x00\x00"
+		  "\xba\x44\x33\x22\x11"
+		  /*    ^^^^ 0x3e */
+		  "\xe8\x39\x00\x00\x00"        /* << function call */
+
+		  "\x48\x8d\x3d\xb4\xff\xff\xff"
+		  /*            ^^^ 0x4a   */
+		  "\xbe\x44\x33\x22\x11"
+		  /*    ^^^ 0x4f      */
+		  "\x31\xd2"
+		  "\xb2\x05"
+		  "\xb0\x0a"
+		  "\x0f\x05"
+		  "\xb8\x11\x22\x33\x44"
+		  /*    ^^^0x5c        */
+		  "\xc3"
+		  /*END OF OPCODE*/
+	/*61*/	  "\x2e\x2e\x2e\x57\x4f\x4f\x44\x59\x2e\x2e\x2e\x0a"
+		  /*...WOODY...n*/
+		  "\x90\x90\x90\x90",
+		  /*ALIGN OPCODE FOR KEY*/
+		  /*70*/
+		  WWRAPPER_SIZE - KEYSIZE);
+
+	_seed_packer(root + (WWRAPPER_SIZE - KEYSIZE), KEYSIZE);
+
+	ft_memcpy(root + WWRAPPER_SIZE,
+		  wpfil->wfile.map + wpfil->unpack_off,
+		  wpfil->unpack_sz);
+
+#define MAX_SECTION 4
+	/* Search for text section, cannot pack plt */
+	for (i = 0; i < MAX_SECTION; i++) {
+		if (0 == ft_strcmp(ELF64_S(init)[i].sh_name + v->_vshstrp, ".text"))
+			break ;
+	}
+
+	text_filesz = ELF64_S(init)[i].sh_size;
+	text_off    = ELF64_S(init)[i].sh_offset;
+	text_align  = text_off & 0xf;
+
+	/* if no executable section found. abort */
+	if (0 == text_filesz) {
+		packsz = -1;
+		goto end;
+	}
+
+	/* text_align based on offset, need to be aligned 2^4 */
+	text_filesz -= text_align;
+	/* remove trailing, bytes */
+	text_filesz &= ~0xf;
+
+	/* obfuscate the 4 executable section using AES-128 
+	   (replaceable with any other type of symmetric encryption) 
+	   object must be compiled with gcc, nasm does not provide enough
+	   info to extract the unpacker */
+	packer(v->wmap + text_off + text_align,
+	       root + WWRAPPER_SIZE - KEYSIZE,
+	       text_filesz);
+#define PHX1_OFFSET 0x1e
+#define PXS1_OFFSET 0x23
+
+#define TXT_OFFSET  0x32
+#define TXS_OFFSET  0x3e
+
+#define PHX2_OFFSET 0x4a
+#define PXS2_OFFSET 0x4f
+
+#define PLSZ_OFFSET 0x5c
+
+	/* setting pointers for patching*/
+	v->pload_phx[0] = root + PHX1_OFFSET;
+	v->pload_phx[1] = root + PHX2_OFFSET;
+	v->pload_pxs[0] = root + PXS1_OFFSET;
+	v->pload_pxs[1] = root + PXS2_OFFSET;
+	v->pload_txt    = root + TXT_OFFSET;
+	v->pload_txs    = root + TXS_OFFSET;
+	/* setting addend for patching */
+	v->upac_align   = text_align;
+	v->upac_filesz  = text_filesz;
+	v->txt_ndx      = i + v->shx_ndx;
+
+	/*gimmick to give size of the payload in the bss for our stub */
+	*((__UINT_LEAST32_TYPE__ *)(root + PLSZ_OFFSET))
+		= (wpfil->unpack_sz + WWRAPPER_SIZE) / 8 + 1;
+
+#undef KEYSIZE
+#undef PLSZ_OFFSET
+#undef PHX1_OFFSET
+#undef PXS1_OFFSET
+#undef PHX2_OFFSET
+#undef PXS2_OFFSET
+#undef TXT_OFFSET
+#undef TXS_OFFSET
+end:
+	return packsz;
+}
+
+static void
+_patch_binary(WVICTIM *v)
+{
+	__UINT_LEAST64_TYPE__
+		offset        = v->added,
+		text_filesz   = v->upac_filesz,
+		text_align    = v->upac_align,
+		phd_fix       = v->phd_fix,
+		align;
+
+	void	*wehdr = v->wmap,
+		*wphdr = v->wmap + ELF64_E(wehdr)->e_phoff,
+		*wshdr = v->wmap + ELF64_E(wehdr)->e_shoff + offset;
+
+	int	phx_ndx = v->phx_ndx,
+		phd_ndx = v->phd_ndx,
+		txt_ndx = v->txt_ndx,
+		bss_ndx = v->bss_ndx;
+
+	__UINT_LEAST64_TYPE__
+		vaddr_patched = v->entry,
+		vaddr_entry   = ELF64_E(wehdr)->e_entry,
+		vaddr_phx     = ELF64_P(wphdr)[phx_ndx].p_vaddr,
+		memsz_phx     ,
+		vaddr_data    = ELF64_P(wphdr)[phd_ndx].p_vaddr,
+		memsz_data    = ELF64_P(wphdr)[phd_ndx].p_memsz,
+		vaddr_payload = vaddr_data
+		+ ELF64_P(wphdr)[phd_ndx].p_filesz
+		+ v->phd_align,
+		vaddr_text    = ELF64_S(wshdr)[txt_ndx].sh_addr;
+
+
+	ELF64_E(wehdr)->e_shoff += offset;
+	ELF64_E(wehdr)->e_entry  = v->entry;
+
+	/* this assumes section are ascending order by offset in file */
+	for (int i = bss_ndx; i < ELF64_E(wehdr)->e_shnum; i++) {
+		if (ELF64_S(wshdr)[i].sh_flags == SHT_NOBITS)
+			continue ;
+		ELF64_S(wshdr)[i].sh_offset += offset;
+	}
+
+	ELF64_S(wshdr)[bss_ndx].sh_size += phd_fix;
+	ELF64_P(wphdr)[phd_ndx].p_memsz += phd_fix;
+	ELF64_P(wphdr)[phd_ndx].p_filesz += offset;
+
+	ELF64_P(wphdr)[phx_ndx].p_filesz += WSTUB_SIZE;
+	ELF64_P(wphdr)[phx_ndx].p_memsz  += WSTUB_SIZE;
+	/* patching the text section is only relevant if we could inject it
+	   before the rodata */
+	if (ELF64_P(wphdr)[phx_ndx+1].p_flags == PF_R)
+		ELF64_S(wshdr)[txt_ndx].sh_size  += WSTUB_SIZE;
+
+	memsz_phx = ELF64_P(wphdr)[phx_ndx].p_filesz;
+
+	/*stub*/
+	align = vaddr_data & 0xfff;
+	/* mprotect rdi + rsi */
+	*v->stub_dat = (vaddr_data & ~0xfff) - vaddr_patched - 0xf;
+	*v->stub_dsz = memsz_data + align;
+	/* rel $rip call to our packer (lea r8, [$rip + ???]) */
+	*v->stub_bss = vaddr_payload - vaddr_patched - 0x16;
+	/* virtual address of _start */
+	*v->stub_jmp = vaddr_entry - vaddr_patched - 0x47;
+
+	/*payload*/
+	*v->pload_phx[0] = vaddr_phx - vaddr_payload - 0x22;
+	*v->pload_pxs[0] = memsz_phx;
+	*v->pload_phx[1] = vaddr_phx - vaddr_payload - 0x4e;
+	*v->pload_pxs[1] = memsz_phx;
+	*v->pload_txt    = vaddr_text - vaddr_payload - 0x36 + text_align;
+	*v->pload_txs    = text_filesz;
+}
+
+static int
+_safe_bss_inject(
+	void *map,
+	void *dynsym,
+	void *bss,
+	__UINT_LEAST64_TYPE__ __top_phd_vaddr)
+{
+	__UINT_LEAST64_TYPE__
+		_topmost_safe_bss = ELF64_S(bss)->sh_addr,
+		st_value;
+	void	*dynsym_p = map + ELF64_S(dynsym)->sh_offset;
+
+	printf("_topmost_safe_bss: %#lx\n", _topmost_safe_bss);
+	if (ELF64_S(dynsym)->sh_type != SHT_DYNSYM ||
+	    ELF64_S(dynsym)->sh_entsize != SELF64_ST)
+		goto result;
+	/* bss top address can be unaligned, align it to 16 */
+	_topmost_safe_bss += -_topmost_safe_bss & 0xf;
+	for (int n = 0, max = ELF64_S(dynsym)->sh_size / SELF64_ST;
+	     n < max;
+	     n++) {
+		st_value = ELF64_ST(dynsym_p)[n].st_value
+			+ ELF64_ST(dynsym_p)[n].st_size;
+		/* align it to 2^16, since size can be random*/
+		st_value += -st_value & 0xf;
+		if (st_value > _topmost_safe_bss)
+			_topmost_safe_bss = st_value;
+	}
+result:
+	printf("_topmost_safe_bss: %#lx\n", _topmost_safe_bss);
+	return _topmost_safe_bss - __top_phd_vaddr;
+}
+
+
 int
 winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 {
-	void (*packer)(void *, void *, size_t) = wpfil->wfile.map + wpfil->pack_off;
-	void *tmap;
-	void *ehdr = wfil->ehdr,
-		*phdr = wfil->phdr,
-		*shdr = wfil->shdr;
-	void *wehdr, *wphdr, *wshdr;
-	void *wpayload_ptr;
+	void    *ehdr = wfil->ehdr,
+	        *phdr = wfil->phdr,
+	        *shdr = wfil->shdr,
+		*shstrp = wfil->shstrp,
+		*wmap;
 
-	void *st, *rela;
-	void *dyn = 0;
+	__UINT_LEAST64_TYPE__
+		phd_vaddr,
+		filesz,
+		offp;
 
-	Elf64_Sxword gdiff = -1;
-
-	char *shstroff;
-	size_t filsz, added;
-	size_t align = 0;
-	size_t offp, xsz = 0;
-	size_t offpa;
-	unsigned char *_exec;
-	int  tfd, rfd;
-#define HAS_GOT      (1 << 0)
-#define HAS_OFFSET   (1 << 1)
-	int  flag = 0;
-	int  xseg = -1,
-	     xsec = -1,
-	     esec = -1;
+	int     phx_dx = -1,
+	        phd_dx = -1,
+		shx_dx = -1,
+		bss_dx = -1,
+		dyn_dx = 0,
+		phd_align,
+		wfd,
+		i;
+	WVICTIM victim;
 
 	if (0 == wfil ||
 	    0 == wpfil)
 		goto fail;
 
 #define WTARGET "woody"
-	/* triggers copy on write on all page allocated */
+	/* 
+	 * triggers copy on write on all page allocated
+	 * this prevents error from happening if the victim file 
+	 * is the same as the target one
+	 */
 	read(wfil->fd, wfil->map, wfil->stat.st_size);
 	/* ^^ worst hack */
-	tfd = open(WTARGET, O_CREAT | O_RDWR, wfil->stat.st_mode);
-	if (0 > tfd) {
-		dprintf(STDERR_FILENO, "failed to open '%s'\n", WTARGET);
-		goto fail;
-	}
+	wfd = open(WTARGET, O_CREAT | O_RDWR, wfil->stat.st_mode);
+	WASSERT(0 > wfd,
+		fail,
+		"failed to open '%s'\n", WTARGET);
 #undef WTARGET
-	rfd = open("/dev/urandom", O_RDONLY);
-	if (-1 == rfd) {
-		dprintf(STDERR_FILENO, "failed to generate key\n");
-		goto fail_l1;
-	}
-
-	/* assumes that program header is ascending order by vaddr */
-	for (int i = 0; i < ELF64_E(ehdr)->e_phnum; i++) {
-		/* get executable segment */
-		if (ELF64_P(phdr)[i].p_flags & PF_X &&
+	/* get executable segments */
+	for (i = 0; i < ELF64_E(ehdr)->e_phnum; i++) {
+		if ((ELF64_P(phdr)[i].p_flags & PF_X) &&
 		    ELF64_P(phdr)[i].p_type == PT_LOAD) {
-			xseg = i;
+			phx_dx = i;
+			break ;
+		}
+	}
+	/* get data segment */
+	for (; i < ELF64_E(ehdr)->e_phnum; i++) {
+		if (ELF64_P(phdr)[i].p_flags == (PF_R | PF_W)) {
+			phd_dx = i;
 			break ;
 		}
 	}
 
-	if (xseg == -1) {
-		dprintf(STDERR_FILENO, "Executable segment not found\n");
-		goto fail_l2;
-	}
-
-	if (ELF64_P(phdr)[xseg].p_offset) {
-		flag |= HAS_OFFSET;
-	}
-
-	if ((flag & HAS_OFFSET) && ELF64_E(wfil->ehdr)->e_type == ET_EXEC) {
-		dprintf(STDERR_FILENO, "static file with gcc version > 8.2.0 are unsupported\n");
-		goto fail_l2;
-	}
-
-	/* get the necessary segments */
-#define LF_SECTION(condition, inst)					\
-	for (int dx = 0; dx < ELF64_E(ehdr)->e_shnum; dx++){		\
-		if (condition)						\
-			inst;						\
-	}
-
-	shstroff = ELF64_S(shdr)[ELF64_E(ehdr)->e_shstrndx].sh_offset + (char *)wfil->map;
-	/* finding the corresponding section of executable segment*/
-	LF_SECTION(ft_strcmp(".init", ELF64_S(shdr)[dx].sh_name + shstroff) == 0,
-		{ xsec = dx; break ; });
-		
-	LF_SECTION(ft_strcmp(".got", ELF64_S(shdr)[dx].sh_name + shstroff) == 0,
-		{ gdiff = ELF64_S(shdr)[dx].sh_addr - ELF64_S(shdr)[dx].sh_offset;
-			break ;});
-	if (!(flag & HAS_OFFSET))
-		LF_SECTION(ELF64_S(shdr)[dx].sh_offset + ELF64_S(shdr)[dx].sh_size == ELF64_P(phdr)[xseg].p_filesz,
-			{ esec = dx + 1; break ;});
-		
-	if (xsec == -1 ||
-	    gdiff == -1 ||
-	    (!(flag & HAS_OFFSET) && esec == -1)) {
-		dprintf(STDERR_FILENO, "Critical section header not found\n");
-		goto fail_l2;
-	}
-
-	/* assumes data is after rodata and rodata is after text */
-	filsz = wfil->stat.st_size;
-	/* unpacker size */
-	added = wpfil->unpack_sz; /* unpacker sz */
-	added += WPACKER_TSIZE; /* packer header size */
-
-	/* ?? */
-	added += 0xfff;
-	added &= ~0xfff; /* align */
-	/* ... */
-
-	if (!(flag & HAS_OFFSET) &&
-	    (ELF64_P(phdr)[xseg+1].p_paddr - 
-	    (ELF64_P(phdr)[xseg].p_paddr + ELF64_P(phdr)[xseg].p_filesz)) < added) {
-		dprintf(STDERR_FILENO, "fatal: cannot append payload to executable segment\n");
-		goto fail_l2;
-	}
-
-	filsz += added;
-	if (ftruncate(tfd, filsz)) {
-		dprintf(STDERR_FILENO, "fatal ftruncate error\n");
-		goto fail_l2;
-	}
-
-	tmap = WWMAP(tfd, filsz);
-	if (MAP_FAILED == tmap) {
-		dprintf(STDERR_FILENO, "fatal: mmap error\n");
-		goto fail_l2;
-	}
-
-	/* 
-	 * section .init to end of section .text, 
-	 * source address should be aligned 
-	 */
-	if (ELF64_S(shdr)[xsec].sh_addr & 0xf) {
-		align = ELF64_S(shdr)[xsec].sh_addr & 0xf;
-	}
-
-	/* copy everything that's behind exec segment offset */
-	offp = flag & HAS_OFFSET ? ELF64_P(phdr)[xseg].p_offset : /* << GCC 8 and higher */
-		ELF64_P(phdr)[xseg].p_filesz; /* << GCC 7 and lower */
-
-	/* injection start */
-	wehdr = ft_memcpy(tmap, ehdr, offp);
-	wphdr = SELF64_E + tmap;
-
-	offpa = -offp & 0xf;
-
-	wpayload_ptr = tmap + offp + offpa;
-	/* copy the rest */
-	ft_memcpy(wpayload_ptr + added - offpa,
-	       wfil->map + offp,
-	       wfil->stat.st_size - offp);
-
-	/* copy the unpacker */
-	ft_memcpy(wpayload_ptr + WPACKER_TSIZE,
-	       wpfil->wfile.map + wpfil->unpack_off,
-	       wpfil->unpack_sz);
-
-
-	_exec = ft_memcpy(wpayload_ptr,
-		       /*0x0*/
-		       "\x57\x52\x50\x56"
-		       /* 0x4 sequence to copy in byte for header */
-		       "\x48\x8d\x35\x53""\x00\x00\x00"
-		       /* 0xb */
-		       "\x48\x31\xff"
-		       "\x48\x31\xd2"
-		       "\x66\xba\x0f\x00"
-		       "\x40\xb7\x01"
-		       "\x48\x31\xc0"
-		       "\xb0\x01"
-		       /* --------------- ---------- */
-		       /* 0x1d syscall */
-		       "\x0f\x05"
-		       /* 0x1f  (0x1e load .text rel) // to do dyn */
-		       "\x48\x8d\x3d\x42""\x00\x00\x00"
-		       /* 0x26 load key address rip rel addr // ok */
-		       "\x48\x8d\x35\x43""\x00\x00\x00"
-		       /* 0x2d mov rdx, size // to do dyn */
-		       "\x48\xba""\x00\x00\x00\x00""\x00\x00\x00\x00"
-		       /* 0x37 packer call // ok */
-		       "\xe8\x44\x00\x00""\x00"
-		       /* 0x3c lea rsi, rip - 0x43 (_init sym) // to do dyn */
-		       "\x48\x8d\x3d\x00""\xff\xff\xff"
-		       /* 0x43 mov rsi, PLACE HOLDER // dyn */
-		       "\x48\xbe""\x00\x00\x00\x00""\x00\x00\x00\x00"
-		       /* 0x4d */
-		       "\x31\xd2\xb2\x05""\xb0\x0a\x90\x90" //  \x0f\x05"
-		       /* 0x55 restore register */
-		       "\x5e\x58\x5a\x5f"
-		       /* 0x59 jmp near rel addr + 0x26 // dyn jump unpack */
-		       "\xe9\x26\x00\x00""\x00"
-		       /* 0x5e ____________ should jump over*/
-		       /*__WOOODY__ , 0xa 0 STRING*/
-		       "....WOODY...."
-		       "\x0a\x00\x90\x90\x90" /* alignment for SSE */
-		       /* 0x70 */
-		       /* ... 16 random bytes */
-		       /* 0x80 */
-		       , 0x70);
-
-	/* urandom key */
-	read(rfd, &0x70[_exec], 16);
-	/* injection end */
-
-	/* patch start */
-	ELF64_P(wphdr)[xseg].p_filesz += added;
-	ELF64_P(wphdr)[xseg].p_memsz = ELF64_P(wphdr)[xseg].p_filesz;
-	ELF64_P(wphdr)[xseg].p_flags |= PF_W;
-	/* 
-	 * offsets them so the original program does not segfaults 
-	 * when using relative address 
-	 */
-	/* patch segment offset */
-	for (int i = xseg + 1; i < ELF64_E(wehdr)->e_phnum; i++) {
-		if (ELF64_P(wphdr)[i].p_offset > offp) {
-			ELF64_P(wphdr)[i].p_offset += added;
-			if (flag & HAS_OFFSET) {
-				ELF64_P(wphdr)[i].p_vaddr  += added;
-				ELF64_P(wphdr)[i].p_paddr  += added;
-			}
+	/* we can't know when there will be a dynsym */
+	for (i = 0; i < ELF64_E(ehdr)->e_shnum; i++) {
+		if (0 == ft_strcmp( ELF64_S(shdr)[i].sh_name + shstrp, ".dynsym")) {
+			dyn_dx = i;
+			break ;
 		}
 	}
 
-	/* patch section offset */
-	ELF64_E(wehdr)->e_shoff += added;
-	wshdr = ELF64_E(wehdr)->e_shoff + tmap;
-
-#define FIX_SECT_OFFSET(x)			\
-	do {					\
-		if ((x).sh_addr)		\
-			(x).sh_addr += added;	\
-		(x).sh_offset += added;		\
-	} while(0)
-
-	if (flag & HAS_OFFSET) {
-		for (int i = xsec; i < ELF64_E(wehdr)->e_shnum; i++)
-			FIX_SECT_OFFSET(ELF64_S(wshdr)[i]);
-	} else {
-		for (int i = esec; i < ELF64_E(wehdr)->e_shnum; i++)
-			ELF64_S(wshdr)[i].sh_offset += added;
-	}
-
-	/* 
-	 * If we inserted on top, we must fix dynamic section 
-	 * otherwise ignore it, since offset has not changed.
-	 */
-#define FIX_RELA_ENTRY(relap)			\
-	(relap).r_offset += added;		\
-	switch (ELF64_R_TYPE((relap).r_info)) {	\
-	case R_X86_64_RELATIVE:			\
-	case R_X86_64_RELATIVE64:		\
-	case R_X86_64_IRELATIVE:		\
-		(relap).r_addend += added;	\
-	default: break ;			\
-	}
-
-#define FIX_GOT_ENTRY(orig, off)		\
-	*((__UINT_LEAST64_TYPE__ *)		\
-	  ((orig) + (off))) += added
-
-
-#define FIX_RELA_SECTION(flag, relap, va_diff, size)			\
-	for (int n = (size) - 1;					\
-	     n > -1; n--) {						\
-		FIX_RELA_ENTRY(ELF64_RELA(relap)[n]);			\
-		/*GOT PATCH*/						\
-		if ((flag) & HAS_GOT &&					\
-		    (ELF64_RELA(relap)[n].r_offset - (va_diff)) < filsz) \
-			FIX_GOT_ENTRY(tmap, ELF64_RELA(relap)[n].r_offset - (va_diff)); \
-	}
-
-	/* patching dynamics, ignore if static or GCC 7 and lower */
-	if ((flag & HAS_OFFSET) &&
-	    ELF64_E(wehdr)->e_type == ET_DYN) {
-		LF_SECTION(ft_strcmp(ELF64_S(wshdr)[dx].sh_name + shstroff, ".dynamic") == 0,
-			{dyn = ELF64_S(wshdr)[dx].sh_offset + tmap; break ;});
-
-		if (0 == dyn) {
-			dprintf(STDERR_FILENO, "dynamic section is missing\n");
-			goto fail_l3;
+	/* get section init */
+	for (i = 0; i < ELF64_E(ehdr)->e_shnum; i++) {
+		if (0 == ft_strcmp(ELF64_S(shdr)[i].sh_name + shstrp, ".init")) {
+			shx_dx = i;
+			break ;
 		}
-		for (;DT_NULL != ELF64_DYN(dyn)->d_tag; NEXT_HDR(dyn, SELF64_DYN)) {
-			switch (ELF64_DYN(dyn)->d_tag) {
-			case DT_PLTGOT:
-			case DT_FINI:
-			case DT_INIT:
-			case DT_FINI_ARRAY:
-			case DT_INIT_ARRAY:
-				ELF64_DYN(dyn)->d_un.d_ptr += added;
-			default: break ;
-			}
-		}
-		/*  patching some section content */
-		for (int i = 0; i < ELF64_E(wehdr)->e_shnum; i++) {
-			if (ELF64_S(wshdr)[i].sh_type == SHT_RELA &&
-			    ELF64_S(wshdr)[i].sh_offset > SELF64_E &&
-			    ELF64_S(wshdr)[i].sh_entsize == SELF64_RELA) {
-
-				rela = ELF64_S(wshdr)[i].sh_offset + tmap;
-				if (0 == ft_strcmp(".rela.plt", shstroff + ELF64_S(wshdr)[i].sh_name))
-					flag |= HAS_GOT;
-
-				FIX_RELA_SECTION(flag, rela, gdiff,
-						 ELF64_S(wshdr)[i].sh_size
-						 / ELF64_S(wshdr)[i].sh_entsize);
-				flag &= ~HAS_GOT;
-			}
-			/* patch symbols */
-			if ((ELF64_S(wshdr)[i].sh_type == SHT_DYNSYM ||
-			     ELF64_S(wshdr)[i].sh_type == SHT_SYMTAB) &&
-			    ELF64_S(wshdr)[i].sh_entsize == SELF64_ST) {
-
-				st = ELF64_S(wshdr)[i].sh_offset + tmap;
-
-				for (int n = ELF64_S(wshdr)[i].sh_size / ELF64_S(wshdr)[i].sh_entsize - 1;
-				     n > -1; n--) {
-					if (ELF64_ST(st)[n].st_value)
-						ELF64_ST(st)[n].st_value += added;
-				}
-			}
-		/* ENDING FOR (... i < ELF64_E ...) BRACKET*/
+	}
+	/* get section bss */
+	for (; i < ELF64_E(ehdr)->e_shnum; i++) {
+		if (0 == ft_strcmp(ELF64_S(shdr)[i].sh_name + shstrp, ".bss")) {
+			bss_dx = i;
+			break;
 		}
 	}
 
-	for (int i = xsec; ELF64_S(shdr)[i].sh_flags & SHF_EXECINSTR; i++)
-		xsz += ELF64_S(shdr)[i].sh_size;
-	xsz &= ~0xf;
+	WASSERT(shx_dx == -1
+		|| phd_dx == -1
+		|| phx_dx == -1
+		|| bss_dx == -1,
+		fail_l1,
+		"Executable program header or .init or .bss not found\n");
+	/* checking requirement for injection */
+	WASSERT(ELF64_P(phdr)[phx_dx + 1].p_vaddr - 
+		ELF64_P(phdr)[phx_dx].p_vaddr + ELF64_P(phdr)[phx_dx].p_memsz
+		< WSTUB_SIZE,
+		fail_l1,
+		"Segment executable cannot append stub, aborting\n");
 
-	/* size to unpack */
-	*((__UINT_LEAST64_TYPE__ *)(&0x2f[_exec])) = xsz;
-	offp += offpa;
+	phd_vaddr     = ELF64_P(phdr)[phd_dx].p_vaddr
+		+ ELF64_P(phdr)[phd_dx].p_filesz;
+	/* bss is not right after data, there is some padding */
+	phd_align     = _safe_bss_inject(wfil->map,
+					 &ELF64_S(shdr)[dyn_dx],
+					 &ELF64_S(shdr)[bss_dx],
+					 phd_vaddr);
 
-	/* patch entry point to our packer */
-	if (flag & HAS_OFFSET) {
-		/* packer is at topside of the map */
-		/* offset to the real section .text */
-		*((__INT_LEAST32_TYPE__ *)(&0x22[_exec])) = added - 0x26;
-		/* point to the start of the segment */
-		*((__INT_LEAST32_TYPE__ *)(&0x3f[_exec])) = -0x43;
-		/* segment size for mprotect */
-		*((__UINT_LEAST64_TYPE__ *)(&0x45[_exec])) = xsz;
-		/* patch the jmp so it goes to _start@.text*/
-		*((__INT_LEAST32_TYPE__ *)(&0x5a[_exec])) = (added) + ELF64_E(wehdr)->e_entry -
-			ELF64_P(wphdr)[xseg].p_vaddr -
-			0x5e;
+	victim.added  = wpfil->unpack_sz;
+	victim.added += WWRAPPER_SIZE;
+	/* There is an offset between the start of the .bss and the end of the .data
+	   and it varies from 0x8 ~ 0x18 */
+	victim.added += phd_align;
+	victim.added += 0xf;
+	victim.added &= ~0xf;
 
-		/* patch entry point */
-		ELF64_E(wehdr)->e_entry = ELF64_P(wphdr)[xseg].p_vaddr;
-		packer(_exec + added, &0x70[_exec], xsz);
-	} else {
-		/* packer is at the bottomside of the map */
-		/* offset to the real section .text */
-		*((__INT_LEAST32_TYPE__ *)(&0x22[_exec])) =
-			-offp + ELF64_S(wshdr)[xsec].sh_addr - 0x26 +
-			align - ELF64_P(wphdr)[xseg].p_vaddr;
-		/* point to the start of the segment */
-		*((__INT_LEAST32_TYPE__ *)(&0x3f[_exec])) =
-			-offp - 0x43;
-		/* segment size for mprotect */
-		*((__UINT_LEAST64_TYPE__ *)(&0x45[_exec])) =
-			ELF64_P(wphdr)[xseg].p_memsz;
-		/* patch the jmp so it goes to _start@.text*/
-		*((__INT_LEAST32_TYPE__ *)(&0x5a[_exec])) =
-			-offp + ELF64_E(wehdr)->e_entry - 0x5e
-			- ELF64_P(wphdr)[xseg].p_vaddr;
-		/* patch entry point */
-		ELF64_E(wehdr)->e_entry =
-			offp + ELF64_P(wphdr)[xseg].p_vaddr;
-		packer(tmap + ELF64_S(wshdr)[xsec].sh_offset + align, &0x70[_exec], xsz);
-	}
-	/*patch end :: 503*/
-	munmap(tmap, filsz);
-	close(tfd);
-	close(rfd);
+	victim.phd_align = phd_align;
+
+	filesz = wfil->stat.st_size + victim.added;
+
+	WASSERT(-1 == ftruncate(wfd, filesz),
+		fail_l1,
+		"Fatal, Could not truncate file\n");
+
+	wmap = WWMAP(wfd, filesz);
+	WASSERT(MAP_FAILED == wmap,
+		fail_l1,
+		"Fatal, mmap error\n");
+
+	offp = ELF64_P(phdr)[phd_dx].p_offset + ELF64_P(phdr)[phd_dx].p_filesz;
+
+	ft_memcpy(wmap, wfil->map, offp);
+
+	victim.wfile = (WFILE *)wfil;
+	victim.wmap = wmap;
+	victim.phd_ndx = phd_dx;
+	victim.phx_ndx = phx_dx;
+	victim.bss_ndx = bss_dx;
+	victim.shx_ndx = shx_dx;
+
+	WASSERT(-1 == _inject_stub(&victim),
+		fail_l2,
+		"Program Header memsz and filesz does not match\n");
+
+	WASSERT(0 > _inject_payload(&victim, wpfil),
+		fail_l2,
+		"smthsmth happened, probably bad (injection fail, should not)\n");
+
+	printf("added %#lx\n", victim.added);
+	ft_memcpy(wmap + offp + victim.added,
+		  wfil->map + offp,
+		  wfil->stat.st_size - offp);
+	/* patching time */
+	_patch_binary(&victim);
+
+	munmap(wmap, filesz);
+	close(wfd);
 	return 0;
-fail_l3:
-	munmap(tmap, filsz);
+
 fail_l2:
-	close(rfd);
+	munmap(wmap, filesz);
 fail_l1:
-	close(tfd);
+	close(wfd);
 fail:
 	return -1;
 }
@@ -672,7 +797,7 @@ fail:
 void
 wusage(void)
 {
-	dprintf(STDERR_FILENO, "usage: ./woodywood_packer [-dpe] binary\n"
+	dprintf(STDERR_FILENO, "usage: ./woody_woodpacker [-dpe] binary\n"
 		"\t-d Specify a symbol name for the unpacker (default: "DEFAULT_PAYLOAD_USYM")\n"
 		"\t-e Specify a symbol name for the packer (default: "DEFAULT_PAYLOAD_PSYM")\n"
 		"\t-p Specify a path to a non stripped loadable object (default: "DEFAULT_PAYLOAD_PATH")\n");
