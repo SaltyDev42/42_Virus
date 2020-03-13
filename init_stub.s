@@ -31,7 +31,7 @@ stub:
 	mov dl, PROT_READ | PROT_WRITE | PROT_EXEC ; prot
 	mov al, __NR_mprotect
 	syscall
-
+;; saving memory space 
 	call r8					; real function
 
 ;; reset bss

@@ -604,22 +604,28 @@ _safe_bss_inject(
 {
 	__UINT_LEAST64_TYPE__
 		_topmost_safe_bss = ELF64_S(bss)->sh_addr,
+		_bss_align = ELF64_S(bss)->sh_addralign - 1,
 		st_value;
 	void	*dynsym_p = map + ELF64_S(dynsym)->sh_offset;
 
-	printf("_topmost_safe_bss: %#lx\n", _topmost_safe_bss);
+	printf("_topmost_safe_bss: %#lx %#lx\n", _topmost_safe_bss, __top_phd_vaddr);
 	if (ELF64_S(dynsym)->sh_type != SHT_DYNSYM ||
 	    ELF64_S(dynsym)->sh_entsize != SELF64_ST)
 		goto result;
-	/* bss top address can be unaligned, align it to 16 */
-	_topmost_safe_bss += -_topmost_safe_bss & 0xf;
+	/* if top phd vaddr is higher than the addr of bss
+	   means the program has already been altered, and we should 
+	   lower than expected */
+	if (__top_phd_vaddr > _topmost_safe_bss)
+		_topmost_safe_bss = __top_phd_vaddr;
+	/* bss top address can be unaligned, align it to bss section align */
+	_topmost_safe_bss += -_topmost_safe_bss & _bss_align;
 	for (int n = 0, max = ELF64_S(dynsym)->sh_size / SELF64_ST;
 	     n < max;
 	     n++) {
 		st_value = ELF64_ST(dynsym_p)[n].st_value
 			+ ELF64_ST(dynsym_p)[n].st_size;
-		/* align it to 2^16, since size can be random*/
-		st_value += -st_value & 0xf;
+		/* align it to 32 (2^5), since size can be random*/
+		st_value += -st_value & _bss_align;
 		if (st_value > _topmost_safe_bss)
 			_topmost_safe_bss = st_value;
 	}
@@ -688,7 +694,7 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 
 	/* we can't know when there will be a dynsym */
 	for (i = 0; i < ELF64_E(ehdr)->e_shnum; i++) {
-		if (0 == ft_strcmp( ELF64_S(shdr)[i].sh_name + shstrp, ".dynsym")) {
+		if (0 == ft_strcmp(ELF64_S(shdr)[i].sh_name + shstrp, ".dynsym")) {
 			dyn_dx = i;
 			break ;
 		}
@@ -716,9 +722,10 @@ winject(WFILE const *wfil, WPAYLOAD const *wpfil)
 		fail_l1,
 		"Executable program header or .init or .bss not found\n");
 	/* checking requirement for injection */
-	WASSERT(ELF64_P(phdr)[phx_dx + 1].p_vaddr - 
-		ELF64_P(phdr)[phx_dx].p_vaddr + ELF64_P(phdr)[phx_dx].p_memsz
-		< WSTUB_SIZE,
+	WASSERT(ELF64_P(phdr)[phx_dx].p_vaddr
+		+ ELF64_P(phdr)[phx_dx].p_memsz
+		+ WSTUB_SIZE
+		> ELF64_P(phdr)[phx_dx + 1].p_vaddr,
 		fail_l1,
 		"Segment executable cannot append stub, aborting\n");
 
